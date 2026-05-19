@@ -2,8 +2,8 @@ name: Feature request
 description: 기능 추가 또는 개선 작업을 제안합니다.
 title: "[Feature] "
 labels:
-  - type:feature
-  - status:needs-review
+  - ✨ type:feature
+  - 👀 status:needs-review
 body:
   - type: markdown
     attributes:

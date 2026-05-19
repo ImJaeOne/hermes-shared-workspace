@@ -2,9 +2,9 @@ name: Deployment task
 description: Docker, Railway, Gateway, MCP 등 배포/운영 관련 작업을 정의합니다.
 title: "[Deploy] "
 labels:
-  - type:deployment
-  - area:platform
-  - status:needs-review
+  - 🚀 type:deployment
+  - 🏗️ area:platform
+  - 👀 status:needs-review
 body:
   - type: dropdown
     id: target

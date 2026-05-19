@@ -2,8 +2,8 @@ name: Bug report
 description: 오류나 기대와 다른 동작을 보고합니다.
 title: "[Bug] "
 labels:
-  - type:bug
-  - status:needs-review
+  - 🐛 type:bug
+  - 👀 status:needs-review
 body:
   - type: dropdown
     id: area

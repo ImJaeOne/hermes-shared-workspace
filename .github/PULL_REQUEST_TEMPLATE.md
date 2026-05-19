@@ -9,7 +9,7 @@
 Closes #
 
 ## Branch / Area
-<!-- 예: feature/platform/initial-repo-setup, area:platform -->
+<!-- 예: feature/platform/initial-repo-setup, 🏗️ area:platform -->
 
 - Branch:
 - Area:

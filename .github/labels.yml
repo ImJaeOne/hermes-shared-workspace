@@ -1,75 +1,75 @@
 # GitHub labels for hermes-shared-workspace
 # Apply with: gh label create/update commands or a label sync workflow/tool.
 
-- name: type:feature
+- name: ✨ type:feature
   color: 0E8A16
   description: New feature or enhancement
-- name: type:bug
+- name: 🐛 type:bug
   color: D73A4A
   description: Bug or incorrect behavior
-- name: type:automation
+- name: 🤖 type:automation
   color: 5319E7
   description: Business workflow or automation task
-- name: type:deployment
+- name: 🚀 type:deployment
   color: 1D76DB
   description: Docker, Railway, gateway, MCP, or release work
-- name: type:docs
+- name: 📚 type:docs
   color: 0075CA
   description: Documentation-only change
-- name: type:refactor
+- name: ♻️ type:refactor
   color: C5DEF5
   description: Code restructuring without behavior change
-- name: type:chore
+- name: 🧹 type:chore
   color: FEF2C0
   description: Repository maintenance
 
-- name: area:platform
+- name: 🏗️ area:platform
   color: 0052CC
   description: Repo structure, Docker, Railway, CI/CD, runtime platform
-- name: area:dashboard
+- name: 🖥️ area:dashboard
   color: 7057FF
   description: Hermes AX dashboard UI and frontend plugin
-- name: area:mcp
+- name: 🔌 area:mcp
   color: 006B75
   description: MCP server and MCP tools
-- name: area:planning
+- name: 📝 area:planning
   color: BFDADC
   description: Planning automation domain
-- name: area:design
+- name: 🎨 area:design
   color: D4C5F9
   description: Design automation domain
-- name: area:gateway
+- name: 🌉 area:gateway
   color: FBCA04
   description: Slack, Telegram, webhook, or API gateway integration
-- name: area:shared
+- name: 🧩 area:shared
   color: C2E0C6
   description: Shared schemas, prompts, templates, and utilities
-- name: area:docs
+- name: 📚 area:docs
   color: 0075CA
   description: Project documentation
 
-- name: priority:low
+- name: 🟢 priority:low
   color: C2E0C6
   description: Low priority
-- name: priority:medium
+- name: 🟡 priority:medium
   color: FEF2C0
   description: Medium priority
-- name: priority:high
+- name: 🟠 priority:high
   color: FBCA04
   description: High priority
-- name: priority:urgent
+- name: 🔴 priority:urgent
   color: B60205
   description: Urgent production-impacting work
 
-- name: status:needs-review
+- name: 👀 status:needs-review
   color: FFD700
   description: Needs user or maintainer review before implementation
-- name: status:ready
+- name: ✅ status:ready
   color: 0E8A16
   description: Ready to implement
-- name: status:in-progress
+- name: 🚧 status:in-progress
   color: 1D76DB
   description: Work in progress
-- name: status:blocked
+- name: ⛔ status:blocked
   color: B60205
   description: Blocked by dependency or decision

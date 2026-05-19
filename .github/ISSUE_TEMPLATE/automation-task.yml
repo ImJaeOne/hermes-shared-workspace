@@ -2,8 +2,8 @@ name: Automation task
 description: 기획/디자인/업무 자동화 워크플로우 작업을 정의합니다.
 title: "[Automation] "
 labels:
-  - type:automation
-  - status:needs-review
+  - 🤖 type:automation
+  - 👀 status:needs-review
 body:
   - type: dropdown
     id: domain
