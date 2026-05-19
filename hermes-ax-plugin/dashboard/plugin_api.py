@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
+import secrets
 import shutil
 import sqlite3
 import uuid
@@ -26,7 +29,12 @@ DB_PATH = DB_DIR / "ax.db"
 ARTIFACTS_DIR = DB_DIR / "artifacts"
 
 # Current schema version for migrations
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+BOOTSTRAP_ADMIN_USERNAME_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_USERNAME"
+BOOTSTRAP_ADMIN_PASSWORD_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_PASSWORD"
+BOOTSTRAP_ADMIN_DISPLAY_NAME_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_DISPLAY_NAME"
+PASSWORD_HASH_ITERATIONS = 390_000
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -38,6 +46,92 @@ def _now() -> str:
 
 def _uuid(prefix: str = "") -> str:
     return f"{prefix}{uuid.uuid4().hex[:12]}"
+
+
+def _normalize_username(username: str) -> str:
+    return username.strip().lower()
+
+
+def _hash_password(password: str, *, salt: str | None = None, iterations: int = PASSWORD_HASH_ITERATIONS) -> str:
+    normalized = password.strip()
+    if not normalized:
+        raise ValueError("Password must not be empty")
+    password_salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        normalized.encode("utf-8"),
+        password_salt.encode("utf-8"),
+        iterations,
+    )
+    return f"pbkdf2_sha256${iterations}${password_salt}${digest.hex()}"
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    try:
+        algorithm, iterations, salt, digest = password_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        candidate = _hash_password(password, salt=salt, iterations=int(iterations))
+        return hmac.compare_digest(candidate, f"{algorithm}${iterations}${salt}${digest}")
+    except ValueError:
+        return False
+
+
+def _get_bootstrap_admin_config() -> dict[str, str] | None:
+    username = _normalize_username(os.environ.get(BOOTSTRAP_ADMIN_USERNAME_ENV, ""))
+    password = os.environ.get(BOOTSTRAP_ADMIN_PASSWORD_ENV, "").strip()
+    display_name = os.environ.get(BOOTSTRAP_ADMIN_DISPLAY_NAME_ENV, "").strip()
+
+    if not username and not password:
+        return None
+    if not username or not password:
+        raise RuntimeError(
+            f"{BOOTSTRAP_ADMIN_USERNAME_ENV} and {BOOTSTRAP_ADMIN_PASSWORD_ENV} must be set together"
+        )
+
+    return {
+        "username": username,
+        "password": password,
+        "display_name": display_name or username,
+    }
+
+
+def _upsert_bootstrap_admin(conn: sqlite3.Connection):
+    config = _get_bootstrap_admin_config()
+    if not config:
+        return
+
+    now = _now()
+    password_hash = _hash_password(config["password"])
+    existing = conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        (config["username"],),
+    ).fetchone()
+
+    if existing:
+        conn.execute(
+            """UPDATE users
+               SET display_name=?, password_hash=?, role='admin', is_active=1, updated_at=?
+               WHERE id=?""",
+            (config["display_name"], password_hash, now, existing["id"]),
+        )
+        return
+
+    conn.execute(
+        """INSERT INTO users
+           (id, username, display_name, password_hash, role, is_active, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            _uuid("usr_"),
+            config["username"],
+            config["display_name"],
+            password_hash,
+            "admin",
+            1,
+            now,
+            now,
+        ),
+    )
 
 
 @contextmanager
@@ -198,6 +292,26 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     decided_at TEXT,
     note TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
 """
 
 
@@ -300,6 +414,32 @@ def _run_migrations(conn: sqlite3.Connection):
             )""")
 
         _set_schema_version(conn, 2)
+        current = 2
+
+    if current < 3:
+        if not _table_exists(conn, "users"):
+            conn.execute("""CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""")
+
+        if not _table_exists(conn, "auth_sessions"):
+            conn.execute("""CREATE TABLE auth_sessions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                session_token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )""")
+
+        _set_schema_version(conn, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +694,7 @@ def init_db():
         conn.executescript(SCHEMA_SQL)
         _run_migrations(conn)
         _seed_if_empty(conn)
+        _upsert_bootstrap_admin(conn)
 
 
 # Run on import
