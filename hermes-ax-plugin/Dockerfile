@@ -35,7 +35,6 @@ RUN cd /opt/hermes-ax-plugin \
 COPY docker-entrypoint.sh /usr/local/bin/hermes-ax-entrypoint
 RUN chmod +x /usr/local/bin/hermes-ax-entrypoint
 
-VOLUME ["/data"]
 EXPOSE 9119
 
 CMD ["/usr/local/bin/hermes-ax-entrypoint"]
