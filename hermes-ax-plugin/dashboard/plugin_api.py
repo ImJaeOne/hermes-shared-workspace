@@ -19,7 +19,9 @@ from pydantic import BaseModel, Field
 
 router = APIRouter()
 
-DB_DIR = Path.home() / ".hermes" / "plugins" / "hermes-ax"
+HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+PLUGIN_DATA_DIR = HERMES_HOME / "plugins" / "hermes-ax-plugin"
+DB_DIR = PLUGIN_DATA_DIR
 DB_PATH = DB_DIR / "ax.db"
 ARTIFACTS_DIR = DB_DIR / "artifacts"
 
