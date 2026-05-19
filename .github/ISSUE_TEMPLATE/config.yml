@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 운영/배포 긴급 문의
+    url: https://github.com/ImJaeOne/hermes-shared-workspace/issues
+    about: 긴급 이슈도 우선 Issue로 남기고 priority:urgent 라벨을 사용합니다.

@@ -1,0 +1,8 @@
+name: hermes-ax
+version: 0.1.0
+description: "AX Dashboard — 에이전트 워크플로우 자동화, 훅 및 트리거"
+hooks:
+  - post_tool_call
+commands:
+  - name: ax-trigger
+    description: "AX 워크플로우 다음 단계 수동 트리거"

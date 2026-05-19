@@ -1,0 +1,66 @@
+name: Deployment task
+description: Docker, Railway, Gateway, MCP 등 배포/운영 관련 작업을 정의합니다.
+title: "[Deploy] "
+labels:
+  - 🚀 type:deployment
+  - 🏗️ area:platform
+  - 👀 status:needs-review
+body:
+  - type: dropdown
+    id: target
+    attributes:
+      label: Target
+      options:
+        - local-docker
+        - railway
+        - github-actions
+        - gateway
+        - mcp-server
+        - volume-persistence
+        - secrets-env
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: 어떤 배포/운영 상태를 만들고 싶나요?
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current State
+      description: 현재 상태, 로그, 설정값을 적어주세요.
+    validations:
+      required: false
+  - type: textarea
+    id: plan
+    attributes:
+      label: Proposed Plan
+      description: 예상 작업 계획을 적어주세요. 에이전트는 이 항목을 기준으로 사용자 확인을 받고 진행합니다.
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation Plan
+      description: 성공 여부를 어떻게 확인할지 적어주세요.
+      value: |
+        - [ ] Docker build 성공
+        - [ ] Dashboard HTTP 응답 확인
+        - [ ] MCP 연결 확인
+        - [ ] Volume persistence 확인
+    validations:
+      required: true
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback Plan
+      description: 실패 시 되돌리는 방법을 적어주세요.
+    validations:
+      required: false

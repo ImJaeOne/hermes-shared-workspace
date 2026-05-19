@@ -1,0 +1,1533 @@
+/* ============================================================
+   Hermes AX Plugin — Dashboard Styles
+   Uses Hermes dashboard CSS variables for full theme compat.
+   ============================================================ */
+
+/* --- Root & Layout --- */
+.ax-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--midground, #ffe6cb);
+}
+
+.ax-main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.ax-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 200px;
+  color: var(--color-muted-foreground);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.ax-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--midground);
+  border-radius: 50%;
+  animation: ax-spin 0.6s linear infinite;
+}
+
+@keyframes ax-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* --- Header --- */
+.ax-header {
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-card);
+  padding: 12px 16px 0;
+}
+
+.ax-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.ax-header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ax-header-title h1 {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  mix-blend-mode: plus-lighter;
+}
+
+.ax-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --- Tabs --- */
+.ax-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border);
+  margin: 0 -16px;
+  padding: 0 16px;
+}
+
+.ax-tab {
+  padding: 8px 16px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.ax-tab:hover {
+  color: var(--midground);
+}
+
+.ax-tab-active {
+  color: var(--midground);
+  font-weight: 600;
+}
+
+/* --- Stats Bar --- */
+.ax-stats-bar {
+  display: flex;
+  gap: 20px;
+  padding: 8px 0 12px;
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.ax-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ax-stat-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.ax-stat-dot-active { background: var(--color-warning, #ffbd38); }
+.ax-stat-dot-completed { background: var(--color-success, #4ade80); }
+.ax-stat-dot-failed { background: var(--color-destructive, #fb2c36); }
+
+/* --- Buttons --- */
+.ax-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md, 0.375rem);
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s, color 0.15s;
+  padding: 6px 14px;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: none;
+  color: var(--midground);
+}
+
+.ax-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ax-btn-primary {
+  background: color-mix(in srgb, var(--midground) 15%, transparent);
+  color: var(--midground);
+  border-color: color-mix(in srgb, var(--midground) 25%, transparent);
+}
+
+.ax-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--midground) 22%, transparent);
+}
+
+.ax-btn-ghost {
+  background: transparent;
+  color: var(--color-muted-foreground);
+  border-color: var(--color-border);
+}
+
+.ax-btn-ghost:hover:not(:disabled) {
+  background: var(--color-secondary);
+  color: var(--midground);
+}
+
+.ax-btn-sm {
+  font-size: 0.65rem;
+  padding: 4px 10px;
+}
+
+.ax-btn-xs {
+  font-size: 0.6rem;
+  padding: 2px 8px;
+}
+
+/* --- Badge --- */
+.ax-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm, 0.25rem);
+  line-height: 1.5;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ax-badge-priority {
+  background: transparent;
+  border: 1px solid currentColor;
+}
+
+/* --- Template Sub-tabs --- */
+.ax-template-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border);
+  margin: 0 -16px;
+  padding: 0 16px;
+}
+
+.ax-tab-sm {
+  font-size: 0.65rem;
+  padding: 6px 12px;
+}
+
+/* Template tab with delete action */
+.ax-tab-with-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  cursor: default;
+}
+
+.ax-tab-with-action .ax-tab-label {
+  all: unset;
+  cursor: pointer;
+  padding: 6px 4px 6px 12px;
+  font: inherit;
+  color: inherit;
+}
+
+.ax-tab-with-action .ax-tab-delete {
+  all: unset;
+  cursor: pointer;
+  padding: 6px 10px 6px 4px;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--color-muted-foreground);
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.ax-tab-with-action:hover .ax-tab-delete {
+  opacity: 1;
+}
+
+.ax-tab-with-action .ax-tab-delete:hover {
+  color: var(--color-destructive, #fb2c36);
+}
+
+/* --- Stage Editor (Template Dialog) --- */
+.ax-stage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ax-stage-order {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--midground) 20%, transparent);
+  color: var(--midground);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+/* --- Kanban Toolbar --- */
+.ax-kanban-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0 8px;
+}
+
+/* --- Kanban --- */
+.ax-kanban {
+  height: 100%;
+}
+
+.ax-kanban-columns {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 12px;
+  height: 100%;
+  align-items: flex-start;
+}
+
+.ax-kanban-col {
+  flex: 0 0 250px;
+  min-width: 250px;
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 0.5rem);
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+}
+
+.ax-kanban-col-done {
+  opacity: 0.5;
+}
+
+.ax-kanban-col-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ax-kanban-col-count {
+  font-size: 0.6rem;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+  background: var(--color-muted);
+  border-radius: 9999px;
+  padding: 1px 8px;
+}
+
+.ax-kanban-col-body {
+  padding: 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ax-kanban-empty {
+  text-align: center;
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+  padding: 16px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  opacity: 0.5;
+}
+
+/* --- Kanban Card --- */
+.ax-kanban-card {
+  padding: 10px 12px;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ax-kanban-card:hover {
+  border-color: color-mix(in srgb, var(--midground) 40%, transparent);
+  background: var(--color-secondary);
+}
+
+.ax-kanban-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ax-kanban-card-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.ax-kanban-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.ax-kanban-card-artifacts {
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+}
+
+.ax-kanban-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+}
+
+.ax-kanban-card-assignee {
+  font-weight: 500;
+}
+
+/* --- Pipeline --- */
+.ax-pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ax-pipeline-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.ax-pipeline-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin: 0 0 6px;
+  letter-spacing: 0.05em;
+}
+
+.ax-pipeline-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ax-pipeline-assignee {
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ax-pipeline-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* --- Stage Timeline --- */
+.ax-timeline {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 12px 0;
+  overflow-x: auto;
+}
+
+.ax-timeline-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md, 0.375rem);
+  background: none;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  min-width: 80px;
+  color: var(--midground);
+}
+
+.ax-timeline-node:hover {
+  background: var(--color-secondary);
+}
+
+.ax-timeline-node-selected {
+  border-color: color-mix(in srgb, var(--midground) 30%, transparent);
+  background: color-mix(in srgb, var(--midground) 6%, transparent);
+}
+
+.ax-timeline-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  background: transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.ax-timeline-node-completed .ax-timeline-dot {
+  background: var(--color-success, #4ade80);
+  border-color: var(--color-success, #4ade80);
+}
+
+.ax-timeline-node-current .ax-timeline-dot {
+  background: var(--color-warning, #ffbd38);
+  border-color: var(--color-warning, #ffbd38);
+}
+
+.ax-timeline-label {
+  font-size: 0.6rem;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+  text-align: center;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ax-timeline-node-current .ax-timeline-label,
+.ax-timeline-node-completed .ax-timeline-label {
+  color: var(--midground);
+  font-weight: 600;
+}
+
+.ax-timeline-connector {
+  width: 24px;
+  height: 1px;
+  background: var(--color-border);
+  flex-shrink: 0;
+}
+
+.ax-timeline-connector-done {
+  background: var(--color-success, #4ade80);
+}
+
+/* --- Stage Detail --- */
+.ax-stage-detail {
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 0.5rem);
+  padding: 16px;
+}
+
+.ax-stage-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.ax-stage-detail-header h3 {
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ax-stage-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ax-stage-expected {
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* --- Add Artifact Form --- */
+.ax-add-artifact {
+  padding: 12px;
+  margin-bottom: 12px;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* --- Artifact List & Card --- */
+.ax-artifact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ax-artifact-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+  overflow: hidden;
+}
+
+.ax-artifact-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ax-artifact-card-header:hover {
+  background: var(--color-secondary);
+}
+
+.ax-artifact-card-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ax-artifact-icon {
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ax-artifact-type {
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+  background: var(--color-muted);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm, 0.25rem);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ax-artifact-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ax-artifact-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ax-artifact-chevron {
+  font-size: 0.55rem;
+  color: var(--color-muted-foreground);
+}
+
+.ax-artifact-card-body {
+  padding: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+/* --- Artifact Viewer --- */
+.ax-artifact-viewer {
+  margin-bottom: 12px;
+}
+
+.ax-artifact-viewer pre {
+  font-size: 0.75rem;
+  line-height: 1.5;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  padding: 12px;
+  border-radius: var(--radius-md, 0.375rem);
+  overflow-x: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--midground);
+  font-family: var(--theme-font-mono, ui-monospace, monospace);
+}
+
+.ax-artifact-empty {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+
+/* --- Comments --- */
+.ax-comments {
+  border-top: 1px solid var(--color-border);
+  padding-top: 12px;
+}
+
+.ax-comments-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ax-comment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.ax-comment-item {
+  padding: 8px;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+}
+
+.ax-comment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.ax-comment-author {
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.ax-comment-time {
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+}
+
+.ax-comment-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.ax-comment-body {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ax-comment-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ax-comment-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.ax-comment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ax-comment-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* --- Transitions --- */
+.ax-transitions {
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 0.5rem);
+  padding: 16px;
+}
+
+.ax-section-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin: 0 0 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ax-transition-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ax-transition-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.7rem;
+  padding: 6px 8px;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+.ax-transition-flow {
+  font-weight: 600;
+}
+
+.ax-transition-by {
+  color: var(--color-muted-foreground);
+}
+
+.ax-transition-note {
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+
+.ax-transition-time {
+  margin-left: auto;
+  color: var(--color-muted-foreground);
+  font-size: 0.6rem;
+}
+
+/* --- Form elements --- */
+.ax-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.65rem;
+  font-weight: 500;
+  color: var(--midground);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.ax-input,
+.ax-textarea {
+  font-size: 0.8rem;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+  background: color-mix(in srgb, var(--color-background, #041c1c) 40%, transparent);
+  color: var(--midground);
+  outline: none;
+  transition: border-color 0.15s;
+  font-family: inherit;
+}
+
+.ax-input:focus,
+.ax-textarea:focus {
+  border-color: color-mix(in srgb, var(--midground) 30%, transparent);
+}
+
+.ax-textarea {
+  resize: vertical;
+  min-height: 48px;
+}
+
+.ax-hint {
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+  margin: 0;
+}
+
+/* --- Dialog/Overlay --- */
+.ax-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  animation: ax-fade-in 0.15s ease-out;
+}
+
+@keyframes ax-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.ax-dialog {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 0.5rem);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+  width: 420px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  animation: ax-dialog-in 0.18s ease-out;
+}
+
+@keyframes ax-dialog-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ax-dialog-header {
+  padding: 16px 20px 0;
+}
+
+.ax-dialog-header h2 {
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ax-dialog-body {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ax-dialog-footer {
+  padding: 0 20px 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* --- Empty State --- */
+.ax-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  color: var(--color-muted-foreground);
+  font-size: 0.7rem;
+  text-align: center;
+  gap: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  opacity: 0.6;
+}
+
+/* --- Scrollbar --- */
+.ax-kanban-col-body::-webkit-scrollbar,
+.ax-kanban-columns::-webkit-scrollbar,
+.ax-timeline::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.ax-kanban-col-body::-webkit-scrollbar-track,
+.ax-kanban-columns::-webkit-scrollbar-track,
+.ax-timeline::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ax-kanban-col-body::-webkit-scrollbar-thumb,
+.ax-kanban-columns::-webkit-scrollbar-thumb,
+.ax-timeline::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 2px;
+}
+
+/* --- Select element styling --- */
+/* --- Select (polished dropdown) --- */
+.ax-select {
+  font-size: 0.8rem;
+  padding: 6px 30px 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+  background: color-mix(in srgb, var(--color-background, #041c1c) 40%, transparent);
+  color: var(--midground);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23999' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 6px;
+  min-width: 0;
+}
+
+.ax-select:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--midground) 25%, transparent);
+}
+
+.ax-select:focus {
+  border-color: color-mix(in srgb, var(--midground) 35%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--midground) 8%, transparent);
+}
+
+.ax-select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ax-select option,
+.ax-input option {
+  background: var(--color-card);
+  color: var(--midground);
+  padding: 6px 10px;
+}
+
+/* ============================================================
+   New styles: Skills, Definition, HITL, Approval, File Upload
+   ============================================================ */
+
+/* --- Approval Badge (Header) --- */
+.ax-approval-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  background: rgba(245,158,11,0.2);
+  color: #f59e0b;
+  border-radius: 9999px;
+  cursor: default;
+}
+
+.ax-badge-approval {
+  background: rgba(245,158,11,0.15) !important;
+  color: #f59e0b !important;
+}
+
+/* --- Skills View --- */
+.ax-skills-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ax-skills-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ax-skills-filters {
+  display: flex;
+  gap: 8px;
+}
+
+.ax-skills-filters .ax-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.ax-skills-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* --- Skill Card --- */
+.ax-skill-card {
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+}
+
+.ax-skill-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ax-skill-card-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ax-skill-card-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.ax-skill-card-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ax-skill-card-desc {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  margin: 0 0 6px;
+  line-height: 1.4;
+}
+
+.ax-skill-card-preview {
+  font-size: 0.65rem;
+  line-height: 1.4;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  padding: 8px;
+  border-radius: var(--radius-sm, 0.25rem);
+  overflow: hidden;
+  max-height: 80px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-muted-foreground);
+  font-family: var(--theme-font-mono, ui-monospace, monospace);
+}
+
+/* --- Dialog Wide (for skill editor) --- */
+.ax-dialog-wide {
+  width: 640px;
+  max-width: 95vw;
+  max-height: 90vh;
+}
+
+/* --- Markdown Editor --- */
+.ax-md-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+  overflow: hidden;
+}
+
+.ax-md-editor-toolbar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-secondary);
+  padding: 4px;
+}
+
+.ax-md-textarea {
+  border: none !important;
+  border-radius: 0 !important;
+  font-family: var(--theme-font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  resize: vertical;
+  min-height: 200px;
+}
+
+.ax-md-preview {
+  padding: 12px;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  min-height: 200px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--color-background, #041c1c) 40%, transparent);
+}
+
+.ax-md-preview h1 { font-size: 1.2rem; font-weight: 700; margin: 12px 0 6px; }
+.ax-md-preview h2 { font-size: 1rem; font-weight: 700; margin: 10px 0 6px; }
+.ax-md-preview h3 { font-size: 0.9rem; font-weight: 600; margin: 8px 0 4px; }
+.ax-md-preview h4 { font-size: 0.85rem; font-weight: 600; margin: 6px 0 4px; }
+.ax-md-preview strong { font-weight: 700; }
+.ax-md-preview em { font-style: italic; }
+.ax-md-preview ul { padding-left: 20px; margin: 4px 0; }
+.ax-md-preview li { margin: 2px 0; }
+.ax-md-preview hr { border: none; border-top: 1px solid var(--color-border); margin: 8px 0; }
+.ax-md-preview a { color: #60a5fa; text-decoration: underline; }
+
+.ax-md-preview .ax-md-code {
+  font-size: 0.7rem;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  padding: 8px;
+  border-radius: var(--radius-sm, 0.25rem);
+  overflow-x: auto;
+  font-family: var(--theme-font-mono, ui-monospace, monospace);
+}
+
+.ax-md-preview .ax-md-inline-code {
+  font-size: 0.75rem;
+  background: var(--color-secondary);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: var(--theme-font-mono, ui-monospace, monospace);
+}
+
+.ax-md-preview .ax-md-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 6px 0;
+  font-size: 0.75rem;
+}
+
+.ax-md-preview .ax-md-table td {
+  border: 1px solid var(--color-border);
+  padding: 4px 8px;
+}
+
+/* --- Definition Editor View --- */
+.ax-definition-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ax-definition-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ax-definition-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ax-save-indicator {
+  font-size: 0.65rem;
+  color: var(--color-success, #4ade80);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.ax-definition-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ax-definition-editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ax-definition-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 800px) {
+  .ax-definition-panels {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- Skill Binding Panel --- */
+.ax-binding-panel {
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 0.5rem);
+  padding: 16px;
+}
+
+.ax-binding-add {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ax-binding-add .ax-input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.ax-input-narrow {
+  max-width: 60px !important;
+  min-width: 60px !important;
+  flex: 0 0 60px !important;
+  text-align: center;
+}
+
+.ax-binding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ax-binding-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+.ax-binding-item-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ax-binding-order {
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.ax-binding-skill-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.ax-binding-skill-desc {
+  font-size: 0.6rem;
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- HITL Config --- */
+.ax-hitl-config {
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 0.5rem);
+  padding: 16px;
+}
+
+.ax-hitl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ax-hitl-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+.ax-hitl-item-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ax-hitl-stage-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* --- Approval Panel --- */
+.ax-approval-panel {
+  background: rgba(245,158,11,0.06);
+  border: 1px solid rgba(245,158,11,0.25);
+  border-radius: var(--radius-lg, 0.5rem);
+  padding: 16px;
+}
+
+.ax-approval-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ax-approval-icon {
+  font-size: 1rem;
+}
+
+.ax-approval-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #f59e0b;
+}
+
+.ax-approval-desc {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+.ax-approval-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ax-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* --- Kanban Card Pending --- */
+.ax-kanban-card-pending {
+  border-color: rgba(245,158,11,0.4) !important;
+  background: color-mix(in srgb, var(--color-card) 90%, rgba(245,158,11,0.05)) !important;
+}
+
+/* --- File Upload --- */
+.ax-file-input {
+  padding: 6px !important;
+}
+
+.ax-file-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  font-size: 0.7rem;
+}
+
+.ax-file-size {
+  color: var(--color-muted-foreground);
+  font-size: 0.6rem;
+}
+
+/* --- Artifact Viewer: Markdown rendered --- */
+.ax-artifact-markdown {
+  font-size: 0.8rem;
+  line-height: 1.6;
+  padding: 12px;
+  background: var(--color-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+}
+
+.ax-artifact-markdown h1 { font-size: 1.1rem; font-weight: 700; margin: 10px 0 6px; }
+.ax-artifact-markdown h2 { font-size: 0.95rem; font-weight: 700; margin: 8px 0 4px; }
+.ax-artifact-markdown h3 { font-size: 0.85rem; font-weight: 600; margin: 6px 0 4px; }
+.ax-artifact-markdown strong { font-weight: 700; }
+.ax-artifact-markdown em { font-style: italic; }
+.ax-artifact-markdown ul { padding-left: 20px; margin: 4px 0; }
+.ax-artifact-markdown li { margin: 2px 0; }
+.ax-artifact-markdown hr { border: none; border-top: 1px solid var(--color-border); margin: 8px 0; }
+.ax-artifact-markdown a { color: #60a5fa; text-decoration: underline; }
+
+.ax-artifact-markdown .ax-md-code {
+  font-size: 0.7rem;
+  background: color-mix(in srgb, var(--color-background, #041c1c) 60%, transparent);
+  border: 1px solid var(--color-border);
+  padding: 8px;
+  border-radius: var(--radius-sm, 0.25rem);
+  overflow-x: auto;
+  font-family: var(--theme-font-mono, ui-monospace, monospace);
+}
+
+.ax-artifact-markdown .ax-md-inline-code {
+  font-size: 0.75rem;
+  background: color-mix(in srgb, var(--color-background, #041c1c) 60%, transparent);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: var(--theme-font-mono, ui-monospace, monospace);
+}
+
+.ax-artifact-markdown .ax-md-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 6px 0;
+  font-size: 0.75rem;
+}
+
+.ax-artifact-markdown .ax-md-table td {
+  border: 1px solid var(--color-border);
+  padding: 4px 8px;
+}
+
+/* --- Artifact Image --- */
+.ax-artifact-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-md, 0.375rem);
+  border: 1px solid var(--color-border);
+}
+
+/* --- Artifact Iframe --- */
+.ax-artifact-iframe {
+  width: 100%;
+  min-height: 300px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 0.375rem);
+  background: #fff;
+}
+
+/* --- Artifact Unsupported --- */
+.ax-artifact-unsupported {
+  text-align: center;
+  padding: 20px;
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+}
+
+/* --- Artifact File Meta --- */
+.ax-artifact-file-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.55rem;
+  color: var(--color-muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* --- Timeline Lock Icon --- */
+.ax-timeline-lock {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  font-size: 0.5rem;
+  line-height: 1;
+}
+
+.ax-timeline-dot {
+  position: relative;
+}
