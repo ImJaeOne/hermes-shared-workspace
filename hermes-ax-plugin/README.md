@@ -139,6 +139,22 @@ hermes> 영업 에이전트의 워크플로우 목록을 보여줘
 # ax_list_workflows 도구가 호출되는지 확인
 ```
 
+### 6. AX 인증 부트스트랩 관리자 설정
+
+PR 1 기준으로 초기 관리자 계정은 환경변수로 부트스트랩합니다.
+
+```bash
+export HERMES_AX_BOOTSTRAP_ADMIN_USERNAME=admin
+export HERMES_AX_BOOTSTRAP_ADMIN_PASSWORD='change-me-now'
+export HERMES_AX_BOOTSTRAP_ADMIN_DISPLAY_NAME='AX Admin'
+```
+
+- `HERMES_AX_BOOTSTRAP_ADMIN_USERNAME`와 `HERMES_AX_BOOTSTRAP_ADMIN_PASSWORD`는 함께 설정해야 합니다.
+- 플러그인 시작 시 `users` 테이블에 관리자 계정을 생성하거나 같은 username의 계정을 admin으로 갱신합니다.
+- PR 1에서 `auth_sessions` 테이블 스키마도 함께 선반영하지만, 실제 세션 로그인 API와 UI는 아직 포함하지 않습니다.
+- 비밀번호는 평문 저장하지 않고 PBKDF2-SHA256 해시로 저장합니다.
+- 세션 로그인 API와 UI는 다음 PR(`feature/dashboard/auth-session-api`, `feature/dashboard/auth-ui-activity-timeline`)에서 이어집니다.
+
 ## Development
 
 ### 프론트엔드 빌드
