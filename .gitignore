@@ -1,0 +1,50 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Build outputs
+**/dist/
+**/build/
+**/.next/
+**/.vite/
+
+# Hermes / AX runtime state
+.hermes/
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/logs/
+**/artifacts/
+**/uploads/
+
+# Docker / local runtime scratch
+.tmp/
+tmp/
+.cache/
+
+# Test / coverage
+coverage/
+.coverage
+.pytest_cache/

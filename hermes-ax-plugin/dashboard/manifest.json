@@ -1,0 +1,14 @@
+{
+  "name": "hermes-ax",
+  "label": "AX Dashboard",
+  "description": "Agent eXecution dashboard - 워크플로우 시각화, 산출물 관리, 코멘트 협업",
+  "icon": "Activity",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/ax",
+    "position": "end"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

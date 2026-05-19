@@ -1,0 +1,76 @@
+name: Automation task
+description: 기획/디자인/업무 자동화 워크플로우 작업을 정의합니다.
+title: "[Automation] "
+labels:
+  - type:automation
+  - status:needs-review
+body:
+  - type: dropdown
+    id: domain
+    attributes:
+      label: Automation Domain
+      description: 어떤 자동화 영역인가요?
+      options:
+        - planning
+        - design
+        - sales
+        - support
+        - gateway
+        - shared
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: User Scenario
+      description: 실제 사용자가 어떤 말/행동으로 자동화를 시작하나요?
+      placeholder: 예) 기획팀장이 고객사 이름을 주면 시장 조사와 제안서 초안을 요청한다.
+    validations:
+      required: true
+  - type: textarea
+    id: inputs
+    attributes:
+      label: Inputs
+      description: 필요한 입력값을 적어주세요.
+      value: |
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: outputs
+    attributes:
+      label: Outputs / Artifacts
+      description: 생성되어야 하는 산출물을 적어주세요.
+      value: |
+        - 
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow Steps
+      description: 예상 단계와 승인/검토 포인트를 적어주세요.
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      value: |
+        - [ ] AX workflow로 생성/조회 가능
+        - [ ] Dashboard에서 상태 확인 가능
+        - [ ] MCP 도구로 필요한 작업을 호출 가능
+        - [ ] 테스트 또는 수동 검증 결과가 PR에 기록됨
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints / Notes
+      description: 보안, 권한, 외부 API, Railway/Gateway 관련 제약을 적어주세요.
+    validations:
+      required: false

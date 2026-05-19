@@ -1,0 +1,32 @@
+{
+  "customer": "고객사명",
+  "contact": {
+    "name": "담당자 이름",
+    "email": "contact@example.com",
+    "phone": "+82-10-0000-0000"
+  },
+  "issue": "이슈 제목 — 구체적 증상 설명",
+  "description": "상세 설명: 어떤 작업을 하다가, 어떤 에러/현상이 발생했는지 구체적으로 기술",
+  "severity": "critical",
+  "category": "billing",
+  "environment": {
+    "browser": "Chrome 125",
+    "os": "macOS 15",
+    "version": "v2.3.0"
+  },
+  "steps_to_reproduce": [
+    "1. [페이지]에 접속",
+    "2. [버튼]을 클릭",
+    "3. [입력값]을 입력 후 제출",
+    "4. 에러 발생"
+  ],
+  "reported_at": "2025-05-10T09:30:00Z",
+  "sla_deadline": "2025-05-10T10:30:00Z",
+  "_severity_guide": {
+    "critical": "서비스 전체 중단, 데이터 손실 위험 — SLA 1시간",
+    "high": "주요 기능 장애, 다수 사용자 영향 — SLA 4시간",
+    "medium": "부분 기능 장애, 우회 방법 존재 — SLA 24시간",
+    "low": "UI 이슈, 개선 요청 — SLA 72시간"
+  },
+  "_category_options": ["billing", "auth", "performance", "feature", "bug", "integration"]
+}
