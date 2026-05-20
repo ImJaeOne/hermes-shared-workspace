@@ -1,4 +1,5 @@
 import type {
+  ActivityLog,
   AgentType,
   ApprovalRequest,
   Artifact,
@@ -96,6 +97,7 @@ export interface WorkflowDetailResponse extends WorkflowInstance {
   stages: (StageDefinition & { is_completed: boolean; is_current: boolean })[];
   artifacts: Artifact[];
   transitions: StageTransition[];
+  activity_logs?: ActivityLog[];
   pending_approval?: ApprovalRequest | null;
 }
 
@@ -151,7 +153,7 @@ export interface ArtifactUploadResponse {
 
 // --- Comment ---
 export interface CreateCommentRequest {
-  author: string;
+  author?: string;
   body: string;
 }
 
@@ -203,7 +205,7 @@ export interface UpdateStageRequest {
 // --- Approval ---
 export interface DecideApprovalRequest {
   status: "approved" | "rejected";
-  decided_by: string;
+  decided_by?: string;
   note?: string;
 }
 

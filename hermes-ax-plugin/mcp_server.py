@@ -14,9 +14,41 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "dashboard"))
 
 from mcp.server.fastmcp import FastMCP
-from plugin_api import get_db, init_db, rows_to_list, row_to_dict, _now, _uuid, _emit_event
+from plugin_api import (
+    get_db,
+    init_db,
+    rows_to_list,
+    row_to_dict,
+    _now,
+    _uuid,
+    _emit_event,
+    _record_activity,
+)
 
 mcp = FastMCP("hermes-ax")
+
+
+def _record_agent_activity(
+    conn,
+    *,
+    action: str,
+    target_type: str,
+    target_id: str | None = None,
+    workflow_id: str | None = None,
+    artifact_id: str | None = None,
+    metadata: dict | None = None,
+):
+    _record_activity(
+        conn,
+        action=action,
+        target_type=target_type,
+        actor_kind="agent",
+        actor_label="mcp",
+        target_id=target_id,
+        workflow_id=workflow_id,
+        artifact_id=artifact_id,
+        metadata=metadata,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -138,10 +170,16 @@ def ax_get_workflow(workflow_id: str) -> dict:
             (workflow_id,),
         ).fetchone())
 
+        activity_logs = rows_to_list(conn.execute(
+            "SELECT * FROM activity_logs WHERE workflow_id=? ORDER BY created_at DESC, id DESC LIMIT 100",
+            (workflow_id,),
+        ).fetchall())
+
         wf["stages"] = all_stages
         wf["artifacts"] = artifacts
         wf["transitions"] = transitions
         wf["pending_approval"] = pending_approval
+        wf["activity_logs"] = activity_logs
 
     return wf
 
@@ -186,6 +224,14 @@ def ax_create_workflow(template_id: str, title: str, priority: int = 0, assignee
             (wf_id, None, first_stage["id"], "agent", "워크플로우 생성 (에이전트)", now),
         )
         _emit_event(conn, "workflow_created", wf_id)
+        _record_agent_activity(
+            conn,
+            action="workflow.create",
+            target_type="workflow",
+            workflow_id=wf_id,
+            target_id=wf_id,
+            metadata={"template_id": template_id, "initial_stage_id": first_stage["id"]},
+        )
 
     return {"id": wf_id, "status": "active", "current_stage_id": first_stage["id"]}
 
@@ -228,6 +274,14 @@ def ax_transition_stage(workflow_id: str, to_stage_id: str, note: str = "") -> d
                 (now, workflow_id),
             )
             _emit_event(conn, "approval_requested", workflow_id, payload={"approval_id": apr_id, "target_stage": to_stage_id})
+            _record_agent_activity(
+                conn,
+                action="approval.request",
+                target_type="approval_request",
+                workflow_id=workflow_id,
+                target_id=apr_id,
+                metadata={"from_stage_id": wf["current_stage_id"], "to_stage_id": to_stage_id, "note": note},
+            )
             return {"ok": True, "pending_approval": True, "approval_id": apr_id, "message": "승인 대기 중입니다."}
 
         conn.execute(
@@ -239,6 +293,14 @@ def ax_transition_stage(workflow_id: str, to_stage_id: str, note: str = "") -> d
             (workflow_id, wf["current_stage_id"], to_stage_id, "agent", note, now),
         )
         _emit_event(conn, "stage_changed", workflow_id, payload={"from": wf["current_stage_id"], "to": to_stage_id})
+        _record_agent_activity(
+            conn,
+            action="workflow.transition",
+            target_type="workflow",
+            workflow_id=workflow_id,
+            target_id=workflow_id,
+            metadata={"from_stage_id": wf["current_stage_id"], "to_stage_id": to_stage_id, "note": note},
+        )
 
     return {"ok": True, "current_stage_id": to_stage_id}
 
@@ -283,6 +345,15 @@ def ax_create_artifact(
             (art_id, workflow_id, stage_id, artifact_type, title, content, content_type, status, "", 0, content_type, now, now),
         )
         _emit_event(conn, "artifact_added", workflow_id, art_id)
+        _record_agent_activity(
+            conn,
+            action="artifact.create",
+            target_type="artifact",
+            workflow_id=workflow_id,
+            artifact_id=art_id,
+            target_id=art_id,
+            metadata={"stage_id": stage_id, "artifact_type": artifact_type, "title": title},
+        )
 
     return {"id": art_id}
 
@@ -337,6 +408,20 @@ def ax_update_artifact(
         params.append(artifact_id)
         conn.execute(f"UPDATE artifacts SET {','.join(updates)} WHERE id=?", params)
         _emit_event(conn, "artifact_updated", art["workflow_id"], artifact_id)
+        _record_agent_activity(
+            conn,
+            action="artifact.update",
+            target_type="artifact",
+            workflow_id=art["workflow_id"],
+            artifact_id=artifact_id,
+            target_id=artifact_id,
+            metadata={
+                "title": title or None,
+                "content_type": content_type or None,
+                "status": status or None,
+                "content_updated": bool(content),
+            },
+        )
 
     return {"ok": True}
 
@@ -383,11 +468,21 @@ def ax_add_comment(artifact_id: str, author: str, body: str) -> dict:
             return {"error": f"Artifact '{artifact_id}' not found"}
 
         now = _now()
+        author_name = author.strip() or "mcp"
         cur = conn.execute(
             "INSERT INTO comments (artifact_id, author, body, created_at, updated_at) VALUES (?,?,?,?,?)",
-            (artifact_id, author, body, now, now),
+            (artifact_id, author_name, body, now, now),
         )
         _emit_event(conn, "comment_added", art["workflow_id"], artifact_id, {"comment_id": cur.lastrowid})
+        _record_agent_activity(
+            conn,
+            action="comment.create",
+            target_type="comment",
+            workflow_id=art["workflow_id"],
+            artifact_id=artifact_id,
+            target_id=str(cur.lastrowid),
+            metadata={"artifact_id": artifact_id, "author": author_name},
+        )
 
     return {"id": cur.lastrowid}
 
@@ -458,9 +553,10 @@ def ax_decide_approval(approval_id: str, decision: str, decided_by: str, note: s
             return {"error": "Approval already decided"}
 
         now = _now()
+        decided_by_label = decided_by.strip() or "mcp"
         conn.execute(
             "UPDATE approval_requests SET status=?, decided_by=?, decided_at=?, note=? WHERE id=?",
-            (decision, decided_by, now, note, approval_id),
+            (decision, decided_by_label, now, note, approval_id),
         )
 
         wf = row_to_dict(conn.execute("SELECT * FROM workflow_instances WHERE id=?", (apr["workflow_id"],)).fetchone())
@@ -472,7 +568,7 @@ def ax_decide_approval(approval_id: str, decision: str, decided_by: str, note: s
             )
             conn.execute(
                 "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at) VALUES (?,?,?,?,?,?)",
-                (apr["workflow_id"], wf["current_stage_id"], apr["stage_id"], decided_by, f"승인: {note}" if note else "승인됨", now),
+                (apr["workflow_id"], wf["current_stage_id"], apr["stage_id"], decided_by_label, f"승인: {note}" if note else "승인됨", now),
             )
             _emit_event(conn, "approval_approved", apr["workflow_id"], payload={"approval_id": approval_id})
             _emit_event(conn, "stage_changed", apr["workflow_id"], payload={
@@ -486,6 +582,15 @@ def ax_decide_approval(approval_id: str, decision: str, decided_by: str, note: s
                 (now, apr["workflow_id"]),
             )
             _emit_event(conn, "approval_rejected", apr["workflow_id"], payload={"approval_id": approval_id})
+
+        _record_agent_activity(
+            conn,
+            action=f"approval.{decision}",
+            target_type="approval_request",
+            workflow_id=apr["workflow_id"],
+            target_id=approval_id,
+            metadata={"stage_id": apr["stage_id"], "decided_by": decided_by_label, "note": note},
+        )
 
     return {"ok": True, "status": decision, "workflow_id": apr["workflow_id"]}
 
@@ -565,6 +670,13 @@ def ax_save_playbook(template_id: str, content: str) -> dict:
                 (content, now, template_id),
             )
             _emit_event(conn, "definition_updated", payload={"template_id": template_id})
+            _record_agent_activity(
+                conn,
+                action="template.definition_upsert",
+                target_type="workflow_definition",
+                target_id=template_id,
+                metadata={"template_id": template_id, "action": "updated", "content_length": len(content)},
+            )
             return {"ok": True, "action": "updated", "template_id": template_id}
         else:
             def_id = _uuid("wdef_")
@@ -573,6 +685,13 @@ def ax_save_playbook(template_id: str, content: str) -> dict:
                 (def_id, template_id, content, now, now),
             )
             _emit_event(conn, "definition_updated", payload={"template_id": template_id})
+            _record_agent_activity(
+                conn,
+                action="template.definition_upsert",
+                target_type="workflow_definition",
+                target_id=template_id,
+                metadata={"template_id": template_id, "action": "created", "definition_id": def_id, "content_length": len(content)},
+            )
             return {"ok": True, "action": "created", "id": def_id, "template_id": template_id}
 
 

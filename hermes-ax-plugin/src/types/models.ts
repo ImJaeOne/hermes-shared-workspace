@@ -16,6 +16,7 @@ export type ContentType =
   | "application/json";
 
 export type TransitionMode = "auto" | "approval_required";
+export type ActorKind = "human" | "agent" | "system";
 
 export type EventKind =
   | "workflow_created"
@@ -86,6 +87,8 @@ export interface WorkflowInstance {
   metadata_json: string;
   created_at: string;
   updated_at: string;
+  created_by_user_id?: string | null;
+  updated_by_user_id?: string | null;
   artifact_count?: number;
   current_stage_name?: string;
   current_stage_order?: number;
@@ -105,6 +108,8 @@ export interface Artifact {
   mime_type: string;
   created_at: string;
   updated_at: string;
+  created_by_user_id?: string | null;
+  updated_by_user_id?: string | null;
   comments?: Comment[];
 }
 
@@ -112,6 +117,7 @@ export interface Comment {
   id: number;
   artifact_id: string;
   author: string;
+  author_user_id?: string | null;
   body: string;
   created_at: string;
   updated_at: string;
@@ -123,6 +129,7 @@ export interface StageTransition {
   from_stage_id: string | null;
   to_stage_id: string;
   triggered_by: string;
+  triggered_by_user_id?: string | null;
   note: string;
   created_at: string;
 }
@@ -133,6 +140,20 @@ export interface AXEvent {
   workflow_id: string;
   artifact_id: string | null;
   payload: string;
+  created_at: string;
+}
+
+export interface ActivityLog {
+  id: number;
+  actor_kind: ActorKind;
+  actor_user_id: string | null;
+  actor_label: string;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  workflow_id: string | null;
+  artifact_id: string | null;
+  metadata_json: string;
   created_at: string;
 }
 
@@ -171,6 +192,7 @@ export interface ApprovalRequest {
   status: "pending" | "approved" | "rejected";
   requested_at: string;
   decided_by: string;
+  decided_by_user_id?: string | null;
   decided_at: string | null;
   note: string;
   workflow_title?: string;
