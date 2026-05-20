@@ -14,6 +14,8 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "dashboard"))
 
 from mcp.server.fastmcp import FastMCP
+
+from activity import _record_activity
 from plugin_api import (
     get_db,
     init_db,
@@ -22,7 +24,6 @@ from plugin_api import (
     _now,
     _uuid,
     _emit_event,
-    _record_activity,
 )
 
 mcp = FastMCP("hermes-ax")
