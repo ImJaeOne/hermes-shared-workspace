@@ -1,0 +1,307 @@
+from __future__ import annotations
+
+import sqlite3
+
+SCHEMA_VERSION = 4
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS agent_types (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    icon TEXT NOT NULL DEFAULT 'Bot',
+    color TEXT NOT NULL DEFAULT '#6366f1',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_templates (
+    id TEXT PRIMARY KEY,
+    agent_type_id TEXT NOT NULL REFERENCES agent_types(id),
+    name TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS stage_definitions (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL REFERENCES workflow_templates(id),
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    stage_order INTEGER NOT NULL,
+    expected_artifacts TEXT NOT NULL DEFAULT '[]',
+    trigger_conditions TEXT NOT NULL DEFAULT '{}',
+    transition_mode TEXT NOT NULL DEFAULT 'auto',
+    approval_roles TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_instances (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL REFERENCES workflow_templates(id),
+    agent_type_id TEXT NOT NULL REFERENCES agent_types(id),
+    title TEXT NOT NULL,
+    current_stage_id TEXT NOT NULL REFERENCES stage_definitions(id),
+    status TEXT NOT NULL DEFAULT 'active',
+    priority INTEGER NOT NULL DEFAULT 0,
+    assignee TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS stage_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id TEXT NOT NULL REFERENCES workflow_instances(id),
+    from_stage_id TEXT,
+    to_stage_id TEXT NOT NULL REFERENCES stage_definitions(id),
+    triggered_by TEXT NOT NULL DEFAULT 'system',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflow_instances(id),
+    stage_id TEXT NOT NULL REFERENCES stage_definitions(id),
+    artifact_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT 'text/markdown',
+    status TEXT NOT NULL DEFAULT 'draft',
+    file_path TEXT NOT NULL DEFAULT '',
+    file_size INTEGER NOT NULL DEFAULT 0,
+    mime_type TEXT NOT NULL DEFAULT 'text/markdown',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ax_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    workflow_id TEXT,
+    artifact_id TEXT,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    agent_type_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (agent_type_id) REFERENCES agent_types(id)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_definitions (
+    id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL UNIQUE REFERENCES workflow_templates(id),
+    content TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_skill_bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id TEXT NOT NULL REFERENCES workflow_templates(id),
+    skill_id TEXT NOT NULL REFERENCES skills(id),
+    stage_id TEXT,
+    execution_order INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(template_id, skill_id, stage_id),
+    FOREIGN KEY (stage_id) REFERENCES stage_definitions(id)
+);
+
+CREATE TABLE IF NOT EXISTS approval_requests (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflow_instances(id),
+    stage_id TEXT NOT NULL REFERENCES stage_definitions(id),
+    status TEXT NOT NULL DEFAULT 'pending',
+    requested_at TEXT NOT NULL,
+    decided_by TEXT NOT NULL DEFAULT '',
+    decided_at TEXT,
+    note TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+"""
+
+
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    try:
+        row = conn.execute("PRAGMA user_version").fetchone()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
+
+def _set_schema_version(conn: sqlite3.Connection, version: int):
+    conn.execute(f"PRAGMA user_version = {version}")
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == column for r in rows)
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    return row[0] > 0
+
+
+def _run_migrations(conn: sqlite3.Connection):
+    """Run incremental migrations based on PRAGMA user_version."""
+    current = _get_schema_version(conn)
+
+    if current < 2:
+        if not _column_exists(conn, "stage_definitions", "transition_mode"):
+            conn.execute("ALTER TABLE stage_definitions ADD COLUMN transition_mode TEXT NOT NULL DEFAULT 'auto'")
+        if not _column_exists(conn, "stage_definitions", "approval_roles"):
+            conn.execute("ALTER TABLE stage_definitions ADD COLUMN approval_roles TEXT NOT NULL DEFAULT '[]'")
+
+        if not _column_exists(conn, "artifacts", "file_path"):
+            conn.execute("ALTER TABLE artifacts ADD COLUMN file_path TEXT NOT NULL DEFAULT ''")
+        if not _column_exists(conn, "artifacts", "file_size"):
+            conn.execute("ALTER TABLE artifacts ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0")
+        if not _column_exists(conn, "artifacts", "mime_type"):
+            conn.execute("ALTER TABLE artifacts ADD COLUMN mime_type TEXT NOT NULL DEFAULT 'text/markdown'")
+
+        if not _table_exists(conn, "skills"):
+            conn.execute("""CREATE TABLE skills (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
+                agent_type_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (agent_type_id) REFERENCES agent_types(id)
+            )""")
+
+        if not _table_exists(conn, "workflow_definitions"):
+            conn.execute("""CREATE TABLE workflow_definitions (
+                id TEXT PRIMARY KEY,
+                template_id TEXT NOT NULL UNIQUE REFERENCES workflow_templates(id),
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""")
+
+        if not _table_exists(conn, "workflow_skill_bindings"):
+            conn.execute("""CREATE TABLE workflow_skill_bindings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id TEXT NOT NULL REFERENCES workflow_templates(id),
+                skill_id TEXT NOT NULL REFERENCES skills(id),
+                stage_id TEXT,
+                execution_order INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(template_id, skill_id, stage_id),
+                FOREIGN KEY (stage_id) REFERENCES stage_definitions(id)
+            )""")
+
+        if not _table_exists(conn, "approval_requests"):
+            conn.execute("""CREATE TABLE approval_requests (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL REFERENCES workflow_instances(id),
+                stage_id TEXT NOT NULL REFERENCES stage_definitions(id),
+                status TEXT NOT NULL DEFAULT 'pending',
+                requested_at TEXT NOT NULL,
+                decided_by TEXT NOT NULL DEFAULT '',
+                decided_at TEXT,
+                note TEXT NOT NULL DEFAULT ''
+            )""")
+
+        _set_schema_version(conn, 2)
+        current = 2
+
+    if current < 3:
+        if not _table_exists(conn, "users"):
+            conn.execute("""CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""")
+
+        if not _table_exists(conn, "auth_sessions"):
+            conn.execute("""CREATE TABLE auth_sessions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                session_token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )""")
+
+        _set_schema_version(conn, 3)
+        current = 3
+
+    if current < 4:
+        if not _table_exists(conn, "activity_logs"):
+            conn.execute("""CREATE TABLE activity_logs (
+                id TEXT PRIMARY KEY,
+                actor_kind TEXT NOT NULL,
+                actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+                actor_label TEXT NOT NULL DEFAULT 'system',
+                action TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT,
+                workflow_id TEXT REFERENCES workflow_instances(id) ON DELETE CASCADE,
+                artifact_id TEXT REFERENCES artifacts(id) ON DELETE CASCADE,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )""")
+
+        if not _column_exists(conn, "workflow_instances", "created_by_user_id"):
+            conn.execute("ALTER TABLE workflow_instances ADD COLUMN created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        if not _column_exists(conn, "artifacts", "created_by_user_id"):
+            conn.execute("ALTER TABLE artifacts ADD COLUMN created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+        if not _column_exists(conn, "artifacts", "updated_by_user_id"):
+            conn.execute("ALTER TABLE artifacts ADD COLUMN updated_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        if not _column_exists(conn, "comments", "author_user_id"):
+            conn.execute("ALTER TABLE comments ADD COLUMN author_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        if not _column_exists(conn, "approval_requests", "requested_by_user_id"):
+            conn.execute("ALTER TABLE approval_requests ADD COLUMN requested_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+        if not _column_exists(conn, "approval_requests", "decided_by_user_id"):
+            conn.execute("ALTER TABLE approval_requests ADD COLUMN decided_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        if not _column_exists(conn, "stage_transitions", "triggered_by_user_id"):
+            conn.execute("ALTER TABLE stage_transitions ADD COLUMN triggered_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        _set_schema_version(conn, 4)
