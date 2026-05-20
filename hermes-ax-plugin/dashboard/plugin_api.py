@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import mimetypes
 import os
@@ -20,6 +18,19 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Respon
 from fastapi.responses import FileResponse
 
 try:
+    from .auth import (
+        AUTH_SESSION_TTL_SECONDS,
+        AX_SESSION_COOKIE,
+        AX_SESSION_COOKIE_SECURE_ENV,
+        get_bootstrap_admin_config,
+        hash_password,
+        hash_session_token,
+        normalize_username,
+        parse_timestamp,
+        serialize_user,
+        verify_password,
+        env_flag,
+    )
     from .schemas import (
         CreateArtifactBody,
         CreateCommentBody,
@@ -38,6 +49,19 @@ try:
         UpdateWorkflowBody,
     )
 except ImportError:
+    from auth import (
+        AUTH_SESSION_TTL_SECONDS,
+        AX_SESSION_COOKIE,
+        AX_SESSION_COOKIE_SECURE_ENV,
+        env_flag,
+        get_bootstrap_admin_config,
+        hash_password,
+        hash_session_token,
+        normalize_username,
+        parse_timestamp,
+        serialize_user,
+        verify_password,
+    )
     from schemas import (
         CreateArtifactBody,
         CreateCommentBody,
@@ -67,14 +91,6 @@ ARTIFACTS_DIR = DB_DIR / "artifacts"
 # Current schema version for migrations
 SCHEMA_VERSION = 4
 
-BOOTSTRAP_ADMIN_USERNAME_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_USERNAME"
-BOOTSTRAP_ADMIN_PASSWORD_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_PASSWORD"
-BOOTSTRAP_ADMIN_DISPLAY_NAME_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_DISPLAY_NAME"
-AX_SESSION_COOKIE_SECURE_ENV = "HERMES_AX_SESSION_COOKIE_SECURE"
-PASSWORD_HASH_ITERATIONS = 390_000
-AX_SESSION_COOKIE = "hermes_ax_session"
-AUTH_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
-
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
@@ -85,67 +101,6 @@ def _now() -> str:
 
 def _uuid(prefix: str = "") -> str:
     return f"{prefix}{uuid.uuid4().hex[:12]}"
-
-
-def _normalize_username(username: str) -> str:
-    return username.strip().lower()
-
-
-def _hash_password(password: str, *, salt: str | None = None, iterations: int = PASSWORD_HASH_ITERATIONS) -> str:
-    normalized = password.strip()
-    if not normalized:
-        raise ValueError("Password must not be empty")
-    password_salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256",
-        normalized.encode("utf-8"),
-        password_salt.encode("utf-8"),
-        iterations,
-    )
-    return f"pbkdf2_sha256${iterations}${password_salt}${digest.hex()}"
-
-
-def _verify_password(password: str, password_hash: str) -> bool:
-    try:
-        algorithm, iterations, salt, digest = password_hash.split("$", 3)
-        if algorithm != "pbkdf2_sha256":
-            return False
-        candidate = _hash_password(password, salt=salt, iterations=int(iterations))
-        return hmac.compare_digest(candidate, f"{algorithm}${iterations}${salt}${digest}")
-    except ValueError:
-        return False
-
-
-def _hash_session_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _parse_timestamp(value: str) -> datetime:
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def _serialize_user(row: sqlite3.Row | dict | None) -> dict | None:
-    if row is None:
-        return None
-    return {
-        "id": row["id"],
-        "username": row["username"],
-        "display_name": row["display_name"],
-        "role": row["role"],
-        "is_active": bool(row["is_active"]),
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
 
 
 def _actor_label(user: sqlite3.Row | dict | None, fallback: str = "system") -> str:
@@ -233,7 +188,7 @@ def _create_auth_session(conn: sqlite3.Connection, user_id: str) -> dict[str, st
         """INSERT INTO auth_sessions
            (id, user_id, session_token_hash, expires_at, created_at, last_seen_at)
            VALUES (?,?,?,?,?,?)""",
-        (session_id, user_id, _hash_session_token(session_token), expires_at, now, now),
+        (session_id, user_id, hash_session_token(session_token), expires_at, now, now),
     )
     return {
         "id": session_id,
@@ -271,7 +226,7 @@ def _get_authenticated_session(conn: sqlite3.Connection, token: str) -> dict[str
            FROM auth_sessions s
            JOIN users u ON u.id = s.user_id
            WHERE s.session_token_hash=?""",
-        (_hash_session_token(token),),
+        (hash_session_token(token),),
     ).fetchone()
     if not row:
         return None
@@ -280,7 +235,7 @@ def _get_authenticated_session(conn: sqlite3.Connection, token: str) -> dict[str
         conn.execute("DELETE FROM auth_sessions WHERE id=?", (row["id"],))
         return None
 
-    if _parse_timestamp(row["expires_at"]) <= datetime.now(timezone.utc):
+    if parse_timestamp(row["expires_at"]) <= datetime.now(timezone.utc):
         conn.execute("DELETE FROM auth_sessions WHERE id=?", (row["id"],))
         return None
 
@@ -306,32 +261,13 @@ def _get_authenticated_session(conn: sqlite3.Connection, token: str) -> dict[str
     }
 
 
-def _get_bootstrap_admin_config() -> dict[str, str] | None:
-    username = _normalize_username(os.environ.get(BOOTSTRAP_ADMIN_USERNAME_ENV, ""))
-    password = os.environ.get(BOOTSTRAP_ADMIN_PASSWORD_ENV, "").strip()
-    display_name = os.environ.get(BOOTSTRAP_ADMIN_DISPLAY_NAME_ENV, "").strip()
-
-    if not username and not password:
-        return None
-    if not username or not password:
-        raise RuntimeError(
-            f"{BOOTSTRAP_ADMIN_USERNAME_ENV} and {BOOTSTRAP_ADMIN_PASSWORD_ENV} must be set together"
-        )
-
-    return {
-        "username": username,
-        "password": password,
-        "display_name": display_name or username,
-    }
-
-
 def _upsert_bootstrap_admin(conn: sqlite3.Connection):
-    config = _get_bootstrap_admin_config()
+    config = get_bootstrap_admin_config()
     if not config:
         return
 
     now = _now()
-    password_hash = _hash_password(config["password"])
+    password_hash = hash_password(config["password"])
     existing = conn.execute(
         "SELECT id FROM users WHERE username=?",
         (config["username"],),
@@ -973,14 +909,14 @@ init_db()
 
 @router.post("/auth/login")
 def login(body: LoginBody, response: Response):
-    username = _normalize_username(body.username)
+    username = normalize_username(body.username)
     password = body.password.strip()
     if not username or not password:
         raise HTTPException(400, "Username and password are required")
 
     with get_db() as conn:
         user = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-        if not user or not user["is_active"] or not _verify_password(password, user["password_hash"]):
+        if not user or not user["is_active"] or not verify_password(password, user["password_hash"]):
             raise HTTPException(401, "Invalid username or password")
 
         session = _create_auth_session(conn, user["id"])
@@ -998,7 +934,7 @@ def login(body: LoginBody, response: Response):
         value=session["token"],
         httponly=True,
         samesite="lax",
-        secure=_env_flag(AX_SESSION_COOKIE_SECURE_ENV, default=False),
+        secure=env_flag(AX_SESSION_COOKIE_SECURE_ENV, default=False),
         max_age=AUTH_SESSION_TTL_SECONDS,
         path="/",
     )
@@ -1006,7 +942,7 @@ def login(body: LoginBody, response: Response):
         "ok": True,
         "token": session["token"],
         "expires_at": session["expires_at"],
-        "user": _serialize_user(user),
+        "user": serialize_user(user),
     }
 
 
@@ -1035,7 +971,7 @@ def logout(request: Request, response: Response):
         if token:
             conn.execute(
                 "DELETE FROM auth_sessions WHERE session_token_hash=?",
-                (_hash_session_token(token),),
+                (hash_session_token(token),),
             )
         if auth:
             _record_user_activity(
