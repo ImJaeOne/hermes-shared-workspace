@@ -23,8 +23,6 @@ try:
         AUTH_SESSION_TTL_SECONDS,
         AX_SESSION_COOKIE,
         AX_SESSION_COOKIE_SECURE_ENV,
-        get_bootstrap_admin_config,
-        hash_password,
         hash_session_token,
         normalize_username,
         parse_timestamp,
@@ -32,6 +30,7 @@ try:
         verify_password,
         env_flag,
     )
+    from .bootstrap import _upsert_bootstrap_admin
     from .db_schema import SCHEMA_SQL, _run_migrations
     from .schemas import (
         CreateArtifactBody,
@@ -57,14 +56,13 @@ except ImportError:
         AX_SESSION_COOKIE,
         AX_SESSION_COOKIE_SECURE_ENV,
         env_flag,
-        get_bootstrap_admin_config,
-        hash_password,
         hash_session_token,
         normalize_username,
         parse_timestamp,
         serialize_user,
         verify_password,
     )
+    from bootstrap import _upsert_bootstrap_admin
     from db_schema import SCHEMA_SQL, _run_migrations
     from schemas import (
         CreateArtifactBody,
@@ -191,44 +189,6 @@ def _get_authenticated_session(conn: sqlite3.Connection, token: str) -> dict[str
             "updated_at": row["user_updated_at"],
         },
     }
-
-
-def _upsert_bootstrap_admin(conn: sqlite3.Connection):
-    config = get_bootstrap_admin_config()
-    if not config:
-        return
-
-    now = _now()
-    password_hash = hash_password(config["password"])
-    existing = conn.execute(
-        "SELECT id FROM users WHERE username=?",
-        (config["username"],),
-    ).fetchone()
-
-    if existing:
-        conn.execute(
-            """UPDATE users
-               SET display_name=?, password_hash=?, role='admin', is_active=1, updated_at=?
-               WHERE id=?""",
-            (config["display_name"], password_hash, now, existing["id"]),
-        )
-        return
-
-    conn.execute(
-        """INSERT INTO users
-           (id, username, display_name, password_hash, role, is_active, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (
-            _uuid("usr_"),
-            config["username"],
-            config["display_name"],
-            password_hash,
-            "admin",
-            1,
-            now,
-            now,
-        ),
-    )
 
 
 @contextmanager
