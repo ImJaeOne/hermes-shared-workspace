@@ -29,7 +29,7 @@ DB_PATH = DB_DIR / "ax.db"
 ARTIFACTS_DIR = DB_DIR / "artifacts"
 
 # Current schema version for migrations
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 BOOTSTRAP_ADMIN_USERNAME_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_USERNAME"
 BOOTSTRAP_ADMIN_PASSWORD_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_PASSWORD"
@@ -98,7 +98,7 @@ def _parse_timestamp(value: str) -> datetime:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _serialize_user(row: sqlite3.Row | None) -> dict | None:
+def _serialize_user(row: sqlite3.Row | dict | None) -> dict | None:
     if row is None:
         return None
     return {
@@ -110,6 +110,80 @@ def _serialize_user(row: sqlite3.Row | None) -> dict | None:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _actor_label(user: sqlite3.Row | dict | None, fallback: str = "system") -> str:
+    if not user:
+        return fallback
+    return (user.get("display_name") if isinstance(user, dict) else user["display_name"]) or (
+        user.get("username") if isinstance(user, dict) else user["username"]
+    ) or fallback
+
+
+def _record_activity(
+    conn: sqlite3.Connection,
+    *,
+    action: str,
+    target_type: str,
+    actor_kind: str,
+    workflow_id: str | None = None,
+    target_id: str | None = None,
+    artifact_id: str | None = None,
+    actor_user_id: str | None = None,
+    actor_label: str = "system",
+    metadata: dict | None = None,
+):
+    conn.execute(
+        """INSERT INTO activity_logs
+           (id, actor_kind, actor_user_id, actor_label, action, target_type, target_id, workflow_id, artifact_id, metadata_json, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            _uuid("act_"),
+            actor_kind,
+            actor_user_id,
+            actor_label,
+            action,
+            target_type,
+            target_id,
+            workflow_id,
+            artifact_id,
+            json.dumps(metadata or {}, ensure_ascii=False),
+            _now(),
+        ),
+    )
+
+
+def _record_user_activity(
+    conn: sqlite3.Connection,
+    *,
+    user: sqlite3.Row | dict,
+    action: str,
+    target_type: str,
+    workflow_id: str | None = None,
+    target_id: str | None = None,
+    artifact_id: str | None = None,
+    metadata: dict | None = None,
+):
+    _record_activity(
+        conn,
+        action=action,
+        target_type=target_type,
+        actor_kind="human",
+        actor_user_id=user["id"],
+        actor_label=_actor_label(user, fallback="user"),
+        workflow_id=workflow_id,
+        target_id=target_id,
+        artifact_id=artifact_id,
+        metadata=metadata,
+    )
+
+
+def _require_authenticated_user(conn: sqlite3.Connection, request: Request) -> dict[str, Any]:
+    token = _get_request_session_token(request)
+    auth = _get_authenticated_session(conn, token)
+    if not auth:
+        raise HTTPException(401, "Authentication required")
+    return auth["user"]
 
 
 def _create_auth_session(conn: sqlite3.Connection, user_id: str) -> dict[str, str]:
@@ -559,6 +633,44 @@ def _run_migrations(conn: sqlite3.Connection):
             )""")
 
         _set_schema_version(conn, 3)
+        current = 3
+
+    if current < 4:
+        if not _table_exists(conn, "activity_logs"):
+            conn.execute("""CREATE TABLE activity_logs (
+                id TEXT PRIMARY KEY,
+                actor_kind TEXT NOT NULL,
+                actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+                actor_label TEXT NOT NULL DEFAULT 'system',
+                action TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT,
+                workflow_id TEXT REFERENCES workflow_instances(id) ON DELETE CASCADE,
+                artifact_id TEXT REFERENCES artifacts(id) ON DELETE CASCADE,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )""")
+
+        if not _column_exists(conn, "workflow_instances", "created_by_user_id"):
+            conn.execute("ALTER TABLE workflow_instances ADD COLUMN created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        if not _column_exists(conn, "artifacts", "created_by_user_id"):
+            conn.execute("ALTER TABLE artifacts ADD COLUMN created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+        if not _column_exists(conn, "artifacts", "updated_by_user_id"):
+            conn.execute("ALTER TABLE artifacts ADD COLUMN updated_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        if not _column_exists(conn, "comments", "author_user_id"):
+            conn.execute("ALTER TABLE comments ADD COLUMN author_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        if not _column_exists(conn, "approval_requests", "requested_by_user_id"):
+            conn.execute("ALTER TABLE approval_requests ADD COLUMN requested_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+        if not _column_exists(conn, "approval_requests", "decided_by_user_id"):
+            conn.execute("ALTER TABLE approval_requests ADD COLUMN decided_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        if not _column_exists(conn, "stage_transitions", "triggered_by_user_id"):
+            conn.execute("ALTER TABLE stage_transitions ADD COLUMN triggered_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
+
+        _set_schema_version(conn, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -874,7 +986,7 @@ class UpdateArtifactBody(BaseModel):
 
 
 class CreateCommentBody(BaseModel):
-    author: str
+    author: str = ""
     body: str
 
 
@@ -913,7 +1025,7 @@ class UpdateStageBody(BaseModel):
 
 class DecideApprovalBody(BaseModel):
     status: str  # 'approved' or 'rejected'
-    decided_by: str
+    decided_by: str = ""
     note: str = ""
 
 
@@ -939,6 +1051,14 @@ def login(body: LoginBody, response: Response):
             raise HTTPException(401, "Invalid username or password")
 
         session = _create_auth_session(conn, user["id"])
+        _record_user_activity(
+            conn,
+            user=user,
+            action="auth.login",
+            target_type="session",
+            target_id=session["id"],
+            metadata={"username": user["username"]},
+        )
 
     response.set_cookie(
         key=AX_SESSION_COOKIE,
@@ -978,10 +1098,20 @@ def get_auth_session(request: Request, response: Response):
 def logout(request: Request, response: Response):
     token = _get_request_session_token(request)
     with get_db() as conn:
+        auth = _get_authenticated_session(conn, token) if token else None
         if token:
             conn.execute(
                 "DELETE FROM auth_sessions WHERE session_token_hash=?",
                 (_hash_session_token(token),),
+            )
+        if auth:
+            _record_user_activity(
+                conn,
+                user=auth["user"],
+                action="auth.logout",
+                target_type="session",
+                target_id=auth["session"]["id"],
+                metadata={"username": auth["user"]["username"]},
             )
 
     response.delete_cookie(key=AX_SESSION_COOKIE, path="/")
@@ -1033,8 +1163,9 @@ def get_agent(agent_id: str):
 # ---------------------------------------------------------------------------
 
 @router.post("/templates")
-def create_template(body: CreateTemplateBody):
+def create_template(body: CreateTemplateBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         agent = conn.execute("SELECT * FROM agent_types WHERE id=?", (body.agent_type_id,)).fetchone()
         if not agent:
             raise HTTPException(404, "Agent not found")
@@ -1055,24 +1186,31 @@ def create_template(body: CreateTemplateBody):
             )
 
         _emit_event(conn, "template_created", payload={"template_id": tmpl_id})
+        _record_user_activity(
+            conn,
+            user=user,
+            action="template.create",
+            target_type="template",
+            target_id=tmpl_id,
+            metadata={"agent_type_id": body.agent_type_id, "stage_count": len(body.stages), "name": body.name},
+        )
 
     return {"id": tmpl_id}
 
 
 @router.delete("/templates/{template_id}")
-def delete_template(template_id: str):
+def delete_template(template_id: str, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         tmpl = conn.execute("SELECT * FROM workflow_templates WHERE id=?", (template_id,)).fetchone()
         if not tmpl:
             raise HTTPException(404, "Template not found")
-        # Check for active workflow instances
         active_count = conn.execute(
             "SELECT count(*) as c FROM workflow_instances WHERE template_id=? AND status IN ('active','pending_approval')",
             (template_id,),
         ).fetchone()["c"]
         if active_count > 0:
             raise HTTPException(400, f"활성 워크플로우 {active_count}개가 있어 삭제할 수 없습니다. 먼저 워크플로우를 완료하거나 삭제하세요.")
-        # Cascade delete
         wf_ids = [r["id"] for r in conn.execute("SELECT id FROM workflow_instances WHERE template_id=?", (template_id,)).fetchall()]
         for wid in wf_ids:
             art_ids = [r["id"] for r in conn.execute("SELECT id FROM artifacts WHERE workflow_id=?", (wid,)).fetchall()]
@@ -1087,6 +1225,14 @@ def delete_template(template_id: str):
         conn.execute("DELETE FROM stage_definitions WHERE template_id=?", (template_id,))
         conn.execute("DELETE FROM workflow_templates WHERE id=?", (template_id,))
         _emit_event(conn, "template_deleted", payload={"template_id": template_id})
+        _record_user_activity(
+            conn,
+            user=user,
+            action="template.delete",
+            target_type="template",
+            target_id=template_id,
+            metadata={"name": tmpl["name"]},
+        )
     return {"ok": True}
 
 
@@ -1186,8 +1332,9 @@ def get_stats():
 # ---------------------------------------------------------------------------
 
 @router.post("/workflows")
-def create_workflow(body: CreateWorkflowBody):
+def create_workflow(body: CreateWorkflowBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         tmpl = row_to_dict(conn.execute("SELECT * FROM workflow_templates WHERE id=?", (body.template_id,)).fetchone())
         if not tmpl:
             raise HTTPException(404, "Template not found")
@@ -1202,15 +1349,24 @@ def create_workflow(body: CreateWorkflowBody):
         wf_id = _uuid("wi_")
         conn.execute(
             """INSERT INTO workflow_instances
-               (id, template_id, agent_type_id, title, current_stage_id, status, priority, assignee, metadata_json, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (wf_id, body.template_id, tmpl["agent_type_id"], body.title, first_stage["id"], "active", body.priority, body.assignee, body.metadata_json, now, now),
+               (id, template_id, agent_type_id, title, current_stage_id, status, priority, assignee, metadata_json, created_at, updated_at, created_by_user_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (wf_id, body.template_id, tmpl["agent_type_id"], body.title, first_stage["id"], "active", body.priority, body.assignee, body.metadata_json, now, now, user["id"]),
         )
         conn.execute(
-            "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at) VALUES (?,?,?,?,?,?)",
-            (wf_id, None, first_stage["id"], "system", "Workflow created", now),
+            "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at, triggered_by_user_id) VALUES (?,?,?,?,?,?,?)",
+            (wf_id, None, first_stage["id"], user["display_name"], "Workflow created", now, user["id"]),
         )
         _emit_event(conn, "workflow_created", wf_id)
+        _record_user_activity(
+            conn,
+            user=user,
+            action="workflow.create",
+            target_type="workflow",
+            workflow_id=wf_id,
+            target_id=wf_id,
+            metadata={"template_id": body.template_id, "initial_stage_id": first_stage["id"]},
+        )
 
     return {"id": wf_id, "status": "active", "current_stage_id": first_stage["id"]}
 
@@ -1246,33 +1402,40 @@ def get_workflow(wf_id: str):
             "SELECT * FROM stage_transitions WHERE workflow_id=? ORDER BY created_at", (wf_id,)
         ).fetchall())
 
-        # Get pending approval if any
         pending_approval = row_to_dict(conn.execute(
             "SELECT * FROM approval_requests WHERE workflow_id=? AND status='pending' LIMIT 1", (wf_id,)
         ).fetchone())
+
+        activity_logs = rows_to_list(conn.execute(
+            "SELECT * FROM activity_logs WHERE workflow_id=? ORDER BY created_at DESC, id DESC LIMIT 100", (wf_id,)
+        ).fetchall())
 
         wf["stages"] = stages_with_status
         wf["artifacts"] = artifacts
         wf["transitions"] = transitions
         wf["pending_approval"] = pending_approval
+        wf["activity_logs"] = activity_logs
 
     return wf
 
 
 @router.patch("/workflows/{wf_id}")
-def update_workflow(wf_id: str, body: UpdateWorkflowBody):
+def update_workflow(wf_id: str, body: UpdateWorkflowBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (wf_id,)).fetchone()
         if not wf:
             raise HTTPException(404, "Workflow not found")
 
         updates = []
         params = []
+        changed_fields: dict[str, Any] = {}
         for field in ("title", "status", "priority", "assignee", "metadata_json"):
             val = getattr(body, field, None)
             if val is not None:
                 updates.append(f"{field}=?")
                 params.append(val)
+                changed_fields[field] = val
 
         if updates:
             updates.append("updated_at=?")
@@ -1280,17 +1443,26 @@ def update_workflow(wf_id: str, body: UpdateWorkflowBody):
             params.append(wf_id)
             conn.execute(f"UPDATE workflow_instances SET {','.join(updates)} WHERE id=?", params)
             _emit_event(conn, "workflow_updated", wf_id)
+            _record_user_activity(
+                conn,
+                user=user,
+                action="workflow.update",
+                target_type="workflow",
+                workflow_id=wf_id,
+                target_id=wf_id,
+                metadata={"changes": changed_fields},
+            )
 
     return {"ok": True}
 
 
 @router.delete("/workflows/{wf_id}")
-def delete_workflow(wf_id: str):
+def delete_workflow(wf_id: str, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (wf_id,)).fetchone()
         if not wf:
             raise HTTPException(404, "Workflow not found")
-        # Cascade delete related data
         art_ids = [r["id"] for r in conn.execute("SELECT id FROM artifacts WHERE workflow_id=?", (wf_id,)).fetchall()]
         for aid in art_ids:
             conn.execute("DELETE FROM comments WHERE artifact_id=?", (aid,))
@@ -1299,12 +1471,22 @@ def delete_workflow(wf_id: str):
         conn.execute("DELETE FROM approval_requests WHERE workflow_id=?", (wf_id,))
         conn.execute("DELETE FROM workflow_instances WHERE id=?", (wf_id,))
         _emit_event(conn, "workflow_deleted", wf_id)
+        _record_user_activity(
+            conn,
+            user=user,
+            action="workflow.delete",
+            target_type="workflow",
+            workflow_id=wf_id,
+            target_id=wf_id,
+            metadata={"title": wf["title"]},
+        )
     return {"ok": True}
 
 
 @router.post("/workflows/{wf_id}/transition")
-def transition_workflow(wf_id: str, body: TransitionBody):
+def transition_workflow(wf_id: str, body: TransitionBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         wf = row_to_dict(conn.execute("SELECT * FROM workflow_instances WHERE id=?", (wf_id,)).fetchone())
         if not wf:
             raise HTTPException(404, "Workflow not found")
@@ -1313,33 +1495,48 @@ def transition_workflow(wf_id: str, body: TransitionBody):
         if not target:
             raise HTTPException(400, "Invalid target stage")
 
-        # Check HITL transition mode
         if target["transition_mode"] == "approval_required":
-            # Create approval request and set workflow to pending_approval
             now = _now()
             apr_id = _uuid("apr_")
             conn.execute(
-                "INSERT INTO approval_requests (id, workflow_id, stage_id, status, requested_at, decided_by, note) VALUES (?,?,?,?,?,?,?)",
-                (apr_id, wf_id, body.to_stage_id, "pending", now, "", body.note),
+                "INSERT INTO approval_requests (id, workflow_id, stage_id, status, requested_at, decided_by, note, requested_by_user_id) VALUES (?,?,?,?,?,?,?,?)",
+                (apr_id, wf_id, body.to_stage_id, "pending", now, "", body.note, user["id"]),
             )
             conn.execute(
                 "UPDATE workflow_instances SET status='pending_approval', updated_at=? WHERE id=?",
                 (now, wf_id),
             )
             _emit_event(conn, "approval_requested", wf_id, payload={"approval_id": apr_id, "target_stage": body.to_stage_id})
+            _record_user_activity(
+                conn,
+                user=user,
+                action="workflow.request_approval",
+                target_type="approval_request",
+                workflow_id=wf_id,
+                target_id=apr_id,
+                metadata={"from_stage_id": wf["current_stage_id"], "to_stage_id": body.to_stage_id, "note": body.note},
+            )
             return {"ok": True, "pending_approval": True, "approval_id": apr_id}
 
-        # Auto transition
         now = _now()
         conn.execute(
             "UPDATE workflow_instances SET current_stage_id=?, updated_at=? WHERE id=?",
             (body.to_stage_id, now, wf_id),
         )
         conn.execute(
-            "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at) VALUES (?,?,?,?,?,?)",
-            (wf_id, wf["current_stage_id"], body.to_stage_id, body.triggered_by, body.note, now),
+            "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at, triggered_by_user_id) VALUES (?,?,?,?,?,?,?)",
+            (wf_id, wf["current_stage_id"], body.to_stage_id, user["display_name"], body.note, now, user["id"]),
         )
         _emit_event(conn, "stage_changed", wf_id, payload={"from": wf["current_stage_id"], "to": body.to_stage_id})
+        _record_user_activity(
+            conn,
+            user=user,
+            action="workflow.transition",
+            target_type="workflow",
+            workflow_id=wf_id,
+            target_id=wf_id,
+            metadata={"from_stage_id": wf["current_stage_id"], "to_stage_id": body.to_stage_id, "note": body.note},
+        )
 
     return {"ok": True, "current_stage_id": body.to_stage_id}
 
@@ -1378,8 +1575,9 @@ def _ext_from_mime(mime_type: str) -> str:
 
 
 @router.post("/artifacts")
-def create_artifact(body: CreateArtifactBody):
+def create_artifact(body: CreateArtifactBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (body.workflow_id,)).fetchone()
         if not wf:
             raise HTTPException(404, "Workflow not found")
@@ -1388,24 +1586,34 @@ def create_artifact(body: CreateArtifactBody):
         art_id = _uuid("art_")
         mime_type = body.content_type
 
-        # Write content to disk
         ext = _ext_from_mime(mime_type)
         content_bytes = body.content.encode("utf-8")
         file_path, file_size = _write_artifact_to_disk(body.workflow_id, body.stage_id, art_id, content_bytes, ext)
 
         conn.execute(
             """INSERT INTO artifacts
-               (id, workflow_id, stage_id, artifact_type, title, content, content_type, status, file_path, file_size, mime_type, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (art_id, body.workflow_id, body.stage_id, body.artifact_type, body.title, body.content, body.content_type, body.status, file_path, file_size, mime_type, now, now),
+               (id, workflow_id, stage_id, artifact_type, title, content, content_type, status, file_path, file_size, mime_type, created_at, updated_at, created_by_user_id, updated_by_user_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (art_id, body.workflow_id, body.stage_id, body.artifact_type, body.title, body.content, body.content_type, body.status, file_path, file_size, mime_type, now, now, user["id"], user["id"]),
         )
         _emit_event(conn, "artifact_added", body.workflow_id, art_id)
+        _record_user_activity(
+            conn,
+            user=user,
+            action="artifact.create",
+            target_type="artifact",
+            workflow_id=body.workflow_id,
+            artifact_id=art_id,
+            target_id=art_id,
+            metadata={"stage_id": body.stage_id, "artifact_type": body.artifact_type, "title": body.title},
+        )
 
     return {"id": art_id}
 
 
 @router.post("/artifacts/upload")
 async def upload_artifact(
+    request: Request,
     workflow_id: str = Form(...),
     stage_id: str = Form(...),
     artifact_type: str = Form(...),
@@ -1415,6 +1623,7 @@ async def upload_artifact(
 ):
     """Upload a file as an artifact."""
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (workflow_id,)).fetchone()
         if not wf:
             raise HTTPException(404, "Workflow not found")
@@ -1422,20 +1631,16 @@ async def upload_artifact(
         now = _now()
         art_id = _uuid("art_")
 
-        # Determine mime type
         mime_type = file.content_type or "application/octet-stream"
         ext = _ext_from_mime(mime_type)
         if file.filename:
-            # Use actual file extension if available
             parts = file.filename.rsplit(".", 1)
             if len(parts) > 1:
                 ext = parts[1].lower()
 
-        # Read and save file
         content_bytes = await file.read()
         file_path, file_size = _write_artifact_to_disk(workflow_id, stage_id, art_id, content_bytes, ext)
 
-        # For text-based files, also store content in DB
         content_text = ""
         if mime_type.startswith("text/") or mime_type == "application/json":
             try:
@@ -1445,11 +1650,21 @@ async def upload_artifact(
 
         conn.execute(
             """INSERT INTO artifacts
-               (id, workflow_id, stage_id, artifact_type, title, content, content_type, status, file_path, file_size, mime_type, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (art_id, workflow_id, stage_id, artifact_type, title, content_text, mime_type, status, file_path, file_size, mime_type, now, now),
+               (id, workflow_id, stage_id, artifact_type, title, content, content_type, status, file_path, file_size, mime_type, created_at, updated_at, created_by_user_id, updated_by_user_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (art_id, workflow_id, stage_id, artifact_type, title, content_text, mime_type, status, file_path, file_size, mime_type, now, now, user["id"], user["id"]),
         )
         _emit_event(conn, "artifact_added", workflow_id, art_id)
+        _record_user_activity(
+            conn,
+            user=user,
+            action="artifact.upload",
+            target_type="artifact",
+            workflow_id=workflow_id,
+            artifact_id=art_id,
+            target_id=art_id,
+            metadata={"stage_id": stage_id, "artifact_type": artifact_type, "title": title, "mime_type": mime_type, "file_size": file_size},
+        )
 
     return {"id": art_id, "file_path": file_path, "file_size": file_size, "mime_type": mime_type}
 
@@ -1476,7 +1691,6 @@ def get_artifact_file(art_id: str):
 
     file_path = art.get("file_path", "")
     if not file_path:
-        # Lazy migration: write content to disk if not yet migrated
         if art["content"]:
             ext = _ext_from_mime(art.get("mime_type") or art["content_type"])
             content_bytes = art["content"].encode("utf-8")
@@ -1499,21 +1713,23 @@ def get_artifact_file(art_id: str):
 
 
 @router.patch("/artifacts/{art_id}")
-def update_artifact(art_id: str, body: UpdateArtifactBody):
+def update_artifact(art_id: str, body: UpdateArtifactBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         art = row_to_dict(conn.execute("SELECT * FROM artifacts WHERE id=?", (art_id,)).fetchone())
         if not art:
             raise HTTPException(404, "Artifact not found")
 
         updates = []
         params = []
+        changed_fields: dict[str, Any] = {}
         for field in ("title", "content", "content_type", "status"):
             val = getattr(body, field, None)
             if val is not None:
                 updates.append(f"{field}=?")
                 params.append(val)
+                changed_fields[field] = val
 
-        # If content changed, update file on disk
         if body.content is not None:
             mime = body.content_type or art["content_type"]
             ext = _ext_from_mime(mime)
@@ -1521,13 +1737,25 @@ def update_artifact(art_id: str, body: UpdateArtifactBody):
             file_path, file_size = _write_artifact_to_disk(art["workflow_id"], art["stage_id"], art_id, content_bytes, ext)
             updates.extend(["file_path=?", "file_size=?", "mime_type=?"])
             params.extend([file_path, file_size, mime])
+            changed_fields["file_path"] = file_path
+            changed_fields["file_size"] = file_size
+            changed_fields["mime_type"] = mime
 
         if updates:
-            updates.append("updated_at=?")
-            params.append(_now())
-            params.append(art_id)
+            updates.extend(["updated_at=?", "updated_by_user_id=?"])
+            params.extend([_now(), user["id"], art_id])
             conn.execute(f"UPDATE artifacts SET {','.join(updates)} WHERE id=?", params)
             _emit_event(conn, "artifact_updated", art["workflow_id"], art_id)
+            _record_user_activity(
+                conn,
+                user=user,
+                action="artifact.update",
+                target_type="artifact",
+                workflow_id=art["workflow_id"],
+                artifact_id=art_id,
+                target_id=art_id,
+                metadata={"changes": changed_fields},
+            )
 
     return {"ok": True}
 
@@ -1537,26 +1765,39 @@ def update_artifact(art_id: str, body: UpdateArtifactBody):
 # ---------------------------------------------------------------------------
 
 @router.post("/artifacts/{art_id}/comments")
-def create_comment(art_id: str, body: CreateCommentBody):
+def create_comment(art_id: str, body: CreateCommentBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         art = conn.execute("SELECT * FROM artifacts WHERE id=?", (art_id,)).fetchone()
         if not art:
             raise HTTPException(404, "Artifact not found")
 
         now = _now()
+        author = body.author.strip() or _actor_label(user, fallback=user["username"])
         cur = conn.execute(
-            "INSERT INTO comments (artifact_id, author, body, created_at, updated_at) VALUES (?,?,?,?,?)",
-            (art_id, body.author, body.body, now, now),
+            "INSERT INTO comments (artifact_id, author, author_user_id, body, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+            (art_id, author, user["id"], body.body, now, now),
         )
         comment_id = cur.lastrowid
         _emit_event(conn, "comment_added", art["workflow_id"], art_id, {"comment_id": comment_id})
+        _record_user_activity(
+            conn,
+            user=user,
+            action="comment.create",
+            target_type="comment",
+            workflow_id=art["workflow_id"],
+            artifact_id=art_id,
+            target_id=str(comment_id),
+            metadata={"artifact_id": art_id},
+        )
 
     return {"id": comment_id}
 
 
 @router.patch("/comments/{comment_id}")
-def update_comment(comment_id: int, body: UpdateCommentBody):
+def update_comment(comment_id: int, body: UpdateCommentBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         comment = conn.execute("SELECT * FROM comments WHERE id=?", (comment_id,)).fetchone()
         if not comment:
             raise HTTPException(404, "Comment not found")
@@ -1567,13 +1808,24 @@ def update_comment(comment_id: int, body: UpdateCommentBody):
         art = conn.execute("SELECT workflow_id FROM artifacts WHERE id=?", (comment["artifact_id"],)).fetchone()
         if art:
             _emit_event(conn, "comment_updated", art["workflow_id"], comment["artifact_id"], {"comment_id": comment_id})
+            _record_user_activity(
+                conn,
+                user=user,
+                action="comment.update",
+                target_type="comment",
+                workflow_id=art["workflow_id"],
+                artifact_id=comment["artifact_id"],
+                target_id=str(comment_id),
+                metadata={"artifact_id": comment["artifact_id"]},
+            )
 
     return {"ok": True}
 
 
 @router.delete("/comments/{comment_id}")
-def delete_comment(comment_id: int):
+def delete_comment(comment_id: int, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         comment = conn.execute("SELECT * FROM comments WHERE id=?", (comment_id,)).fetchone()
         if not comment:
             raise HTTPException(404, "Comment not found")
@@ -1581,6 +1833,16 @@ def delete_comment(comment_id: int):
         conn.execute("DELETE FROM comments WHERE id=?", (comment_id,))
         if art:
             _emit_event(conn, "comment_deleted", art["workflow_id"], comment["artifact_id"], {"comment_id": comment_id})
+            _record_user_activity(
+                conn,
+                user=user,
+                action="comment.delete",
+                target_type="comment",
+                workflow_id=art["workflow_id"],
+                artifact_id=comment["artifact_id"],
+                target_id=str(comment_id),
+                metadata={"artifact_id": comment["artifact_id"]},
+            )
 
     return {"ok": True}
 
@@ -1603,8 +1865,9 @@ def list_skills(agent_type_id: str | None = Query(None)):
 
 
 @router.post("/skills")
-def create_skill(body: CreateSkillBody):
+def create_skill(body: CreateSkillBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         now = _now()
         skill_id = _uuid("skill_")
         conn.execute(
@@ -1612,6 +1875,14 @@ def create_skill(body: CreateSkillBody):
             (skill_id, body.name, body.description, body.content, body.agent_type_id, now, now),
         )
         _emit_event(conn, "skill_created", payload={"skill_id": skill_id})
+        _record_user_activity(
+            conn,
+            user=user,
+            action="skill.create",
+            target_type="skill",
+            target_id=skill_id,
+            metadata={"name": body.name, "agent_type_id": body.agent_type_id},
+        )
     return {"id": skill_id}
 
 
@@ -1625,19 +1896,22 @@ def get_skill(skill_id: str):
 
 
 @router.patch("/skills/{skill_id}")
-def update_skill(skill_id: str, body: UpdateSkillBody):
+def update_skill(skill_id: str, body: UpdateSkillBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         skill = conn.execute("SELECT * FROM skills WHERE id=?", (skill_id,)).fetchone()
         if not skill:
             raise HTTPException(404, "Skill not found")
 
         updates = []
         params = []
+        changed_fields: dict[str, Any] = {}
         for field in ("name", "description", "content", "agent_type_id"):
             val = getattr(body, field, None)
             if val is not None:
                 updates.append(f"{field}=?")
                 params.append(val)
+                changed_fields[field] = val
 
         if updates:
             updates.append("updated_at=?")
@@ -1645,20 +1919,36 @@ def update_skill(skill_id: str, body: UpdateSkillBody):
             params.append(skill_id)
             conn.execute(f"UPDATE skills SET {','.join(updates)} WHERE id=?", params)
             _emit_event(conn, "skill_updated", payload={"skill_id": skill_id})
+            _record_user_activity(
+                conn,
+                user=user,
+                action="skill.update",
+                target_type="skill",
+                target_id=skill_id,
+                metadata={"changes": changed_fields},
+            )
 
     return {"ok": True}
 
 
 @router.delete("/skills/{skill_id}")
-def delete_skill(skill_id: str):
+def delete_skill(skill_id: str, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         skill = conn.execute("SELECT * FROM skills WHERE id=?", (skill_id,)).fetchone()
         if not skill:
             raise HTTPException(404, "Skill not found")
-        # Cascade delete bindings
         conn.execute("DELETE FROM workflow_skill_bindings WHERE skill_id=?", (skill_id,))
         conn.execute("DELETE FROM skills WHERE id=?", (skill_id,))
         _emit_event(conn, "skill_deleted", payload={"skill_id": skill_id})
+        _record_user_activity(
+            conn,
+            user=user,
+            action="skill.delete",
+            target_type="skill",
+            target_id=skill_id,
+            metadata={"name": skill["name"]},
+        )
     return {"ok": True}
 
 
@@ -1681,8 +1971,9 @@ def get_definition(template_id: str):
 
 
 @router.put("/templates/{template_id}/definition")
-def upsert_definition(template_id: str, body: UpdateDefinitionBody):
+def upsert_definition(template_id: str, body: UpdateDefinitionBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         tmpl = conn.execute("SELECT * FROM workflow_templates WHERE id=?", (template_id,)).fetchone()
         if not tmpl:
             raise HTTPException(404, "Template not found")
@@ -1703,6 +1994,14 @@ def upsert_definition(template_id: str, body: UpdateDefinitionBody):
             )
 
         _emit_event(conn, "definition_updated", payload={"template_id": template_id})
+        _record_user_activity(
+            conn,
+            user=user,
+            action="template.definition_upsert",
+            target_type="workflow_definition",
+            target_id=template_id,
+            metadata={"template_id": template_id, "content_length": len(body.content)},
+        )
 
     return {"ok": True}
 
@@ -1726,8 +2025,9 @@ def list_skill_bindings(template_id: str):
 
 
 @router.post("/templates/{template_id}/skills")
-def create_skill_binding(template_id: str, body: CreateSkillBindingBody):
+def create_skill_binding(template_id: str, body: CreateSkillBindingBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         tmpl = conn.execute("SELECT * FROM workflow_templates WHERE id=?", (template_id,)).fetchone()
         if not tmpl:
             raise HTTPException(404, "Template not found")
@@ -1744,13 +2044,22 @@ def create_skill_binding(template_id: str, body: CreateSkillBindingBody):
             raise HTTPException(409, "Binding already exists")
 
         _emit_event(conn, "binding_created", payload={"template_id": template_id, "skill_id": body.skill_id})
+        _record_user_activity(
+            conn,
+            user=user,
+            action="template.skill_binding_create",
+            target_type="workflow_skill_binding",
+            target_id=str(cur.lastrowid),
+            metadata={"template_id": template_id, "skill_id": body.skill_id, "stage_id": body.stage_id},
+        )
 
     return {"id": cur.lastrowid}
 
 
 @router.delete("/templates/{template_id}/skills/{binding_id}")
-def delete_skill_binding(template_id: str, binding_id: int):
+def delete_skill_binding(template_id: str, binding_id: int, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         binding = conn.execute(
             "SELECT * FROM workflow_skill_bindings WHERE id=? AND template_id=?", (binding_id, template_id)
         ).fetchone()
@@ -1758,6 +2067,14 @@ def delete_skill_binding(template_id: str, binding_id: int):
             raise HTTPException(404, "Binding not found")
         conn.execute("DELETE FROM workflow_skill_bindings WHERE id=?", (binding_id,))
         _emit_event(conn, "binding_deleted", payload={"template_id": template_id, "binding_id": binding_id})
+        _record_user_activity(
+            conn,
+            user=user,
+            action="template.skill_binding_delete",
+            target_type="workflow_skill_binding",
+            target_id=str(binding_id),
+            metadata={"template_id": template_id, "skill_id": binding["skill_id"], "stage_id": binding["stage_id"]},
+        )
     return {"ok": True}
 
 
@@ -1766,27 +2083,39 @@ def delete_skill_binding(template_id: str, binding_id: int):
 # ---------------------------------------------------------------------------
 
 @router.patch("/stages/{stage_id}")
-def update_stage(stage_id: str, body: UpdateStageBody):
+def update_stage(stage_id: str, body: UpdateStageBody, request: Request):
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         stage = conn.execute("SELECT * FROM stage_definitions WHERE id=?", (stage_id,)).fetchone()
         if not stage:
             raise HTTPException(404, "Stage not found")
 
         updates = []
         params = []
+        changed_fields: dict[str, Any] = {}
         if body.transition_mode is not None:
             if body.transition_mode not in ("auto", "approval_required"):
                 raise HTTPException(400, "transition_mode must be 'auto' or 'approval_required'")
             updates.append("transition_mode=?")
             params.append(body.transition_mode)
+            changed_fields["transition_mode"] = body.transition_mode
         if body.approval_roles is not None:
             updates.append("approval_roles=?")
             params.append(body.approval_roles)
+            changed_fields["approval_roles"] = body.approval_roles
 
         if updates:
             params.append(stage_id)
             conn.execute(f"UPDATE stage_definitions SET {','.join(updates)} WHERE id=?", params)
             _emit_event(conn, "stage_updated", payload={"stage_id": stage_id})
+            _record_user_activity(
+                conn,
+                user=user,
+                action="stage.update",
+                target_type="stage",
+                target_id=stage_id,
+                metadata={"changes": changed_fields},
+            )
 
     return {"ok": True}
 
@@ -1824,11 +2153,12 @@ def list_approvals(workflow_id: str | None = Query(None), status: str | None = Q
 
 
 @router.post("/approvals/{approval_id}/decide")
-def decide_approval(approval_id: str, body: DecideApprovalBody):
+def decide_approval(approval_id: str, body: DecideApprovalBody, request: Request):
     if body.status not in ("approved", "rejected"):
         raise HTTPException(400, "Status must be 'approved' or 'rejected'")
 
     with get_db() as conn:
+        user = _require_authenticated_user(conn, request)
         apr = row_to_dict(conn.execute("SELECT * FROM approval_requests WHERE id=?", (approval_id,)).fetchone())
         if not apr:
             raise HTTPException(404, "Approval request not found")
@@ -1836,32 +2166,41 @@ def decide_approval(approval_id: str, body: DecideApprovalBody):
             raise HTTPException(400, "Approval already decided")
 
         now = _now()
+        decided_by = body.decided_by.strip() or _actor_label(user, fallback=user["username"])
         conn.execute(
-            "UPDATE approval_requests SET status=?, decided_by=?, decided_at=?, note=? WHERE id=?",
-            (body.status, body.decided_by, now, body.note, approval_id),
+            "UPDATE approval_requests SET status=?, decided_by=?, decided_at=?, note=?, decided_by_user_id=? WHERE id=?",
+            (body.status, decided_by, now, body.note, user["id"], approval_id),
         )
 
         wf = row_to_dict(conn.execute("SELECT * FROM workflow_instances WHERE id=?", (apr["workflow_id"],)).fetchone())
 
         if body.status == "approved":
-            # Execute the actual transition
             conn.execute(
                 "UPDATE workflow_instances SET current_stage_id=?, status='active', updated_at=? WHERE id=?",
                 (apr["stage_id"], now, apr["workflow_id"]),
             )
             conn.execute(
-                "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at) VALUES (?,?,?,?,?,?)",
-                (apr["workflow_id"], wf["current_stage_id"], apr["stage_id"], body.decided_by, f"승인: {body.note}" if body.note else "승인됨", now),
+                "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at, triggered_by_user_id) VALUES (?,?,?,?,?,?,?)",
+                (apr["workflow_id"], wf["current_stage_id"], apr["stage_id"], decided_by, f"승인: {body.note}" if body.note else "승인됨", now, user["id"]),
             )
             _emit_event(conn, "approval_approved", apr["workflow_id"], payload={"approval_id": approval_id, "trigger_next": True})
             _emit_event(conn, "stage_changed", apr["workflow_id"], payload={"from": wf["current_stage_id"], "to": apr["stage_id"], "trigger_next": True})
         else:
-            # Rejected: restore to active status, stay on current stage
             conn.execute(
                 "UPDATE workflow_instances SET status='active', updated_at=? WHERE id=?",
                 (now, apr["workflow_id"]),
             )
             _emit_event(conn, "approval_rejected", apr["workflow_id"], payload={"approval_id": approval_id})
+
+        _record_user_activity(
+            conn,
+            user=user,
+            action=f"approval.{body.status}",
+            target_type="approval_request",
+            workflow_id=apr["workflow_id"],
+            target_id=approval_id,
+            metadata={"stage_id": apr["stage_id"], "note": body.note},
+        )
 
     return {"ok": True, "status": body.status}
 
