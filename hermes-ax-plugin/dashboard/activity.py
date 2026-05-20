@@ -4,18 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import uuid
-from datetime import datetime, timezone
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-
-def _uuid(prefix: str = "") -> str:
-    return f"{prefix}{uuid.uuid4().hex[:12]}"
-
+try:
+    from .common import _now, _uuid
+except ImportError:
+    from common import _now, _uuid
 
 
 def _actor_label(user: sqlite3.Row | dict | None, fallback: str = "system") -> str:

@@ -8,7 +8,6 @@ import os
 import secrets
 import shutil
 import sqlite3
-import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +30,7 @@ try:
         env_flag,
     )
     from .bootstrap import _upsert_bootstrap_admin
+    from .common import _now, _uuid
     from .db_schema import SCHEMA_SQL, _run_migrations
     from .seed import seed_if_empty
     from .rows import row_to_dict, rows_to_list
@@ -65,6 +65,7 @@ except ImportError:
         verify_password,
     )
     from bootstrap import _upsert_bootstrap_admin
+    from common import _now, _uuid
     from db_schema import SCHEMA_SQL, _run_migrations
     from seed import seed_if_empty
     from rows import row_to_dict, rows_to_list
@@ -93,15 +94,6 @@ PLUGIN_DATA_DIR = HERMES_HOME / "plugins" / "hermes-ax-plugin"
 DB_DIR = PLUGIN_DATA_DIR
 DB_PATH = DB_DIR / "ax.db"
 ARTIFACTS_DIR = DB_DIR / "artifacts"
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _uuid(prefix: str = "") -> str:
-    return f"{prefix}{uuid.uuid4().hex[:12]}"
-
-
 
 def _require_authenticated_user(conn: sqlite3.Connection, request: Request) -> dict[str, Any]:
     token = _get_request_session_token(request)

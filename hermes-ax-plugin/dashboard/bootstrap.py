@@ -1,21 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
-import uuid
-from datetime import datetime, timezone
 
 try:
     from .auth import get_bootstrap_admin_config, hash_password
+    from .common import _now, _uuid
 except ImportError:
     from auth import get_bootstrap_admin_config, hash_password
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _uuid(prefix: str = "") -> str:
-    return f"{prefix}{uuid.uuid4().hex[:12]}"
+    from common import _now, _uuid
 
 
 def _upsert_bootstrap_admin(conn: sqlite3.Connection):
