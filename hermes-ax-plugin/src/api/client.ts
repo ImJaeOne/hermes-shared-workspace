@@ -31,6 +31,16 @@ import type {
 import type { Skill, WorkflowDefinition, WorkflowSkillBinding } from "../types/models";
 
 const API_BASE = "/api/plugins/hermes-ax";
+const SESSION_TOKEN_STORAGE_KEY = "hermes_ax_session_token";
+
+type HermesWindow = Window & typeof globalThis & {
+  __HERMES_SESSION_TOKEN__?: string;
+};
+
+function getBrowserWindow(): HermesWindow | null {
+  if (typeof window === "undefined") return null;
+  return window as HermesWindow;
+}
 
 export class ApiError extends Error {
   status: number;
@@ -44,8 +54,53 @@ export class ApiError extends Error {
   }
 }
 
+function readStoredSessionToken(): string {
+  const browserWindow = getBrowserWindow();
+  if (!browserWindow) return "";
+
+  try {
+    return browserWindow.localStorage.getItem(SESSION_TOKEN_STORAGE_KEY)?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+export function setSessionToken(token: string): void {
+  const browserWindow = getBrowserWindow();
+  if (!browserWindow) return;
+
+  const normalizedToken = token.trim();
+  browserWindow.__HERMES_SESSION_TOKEN__ = normalizedToken;
+
+  try {
+    if (normalizedToken) {
+      browserWindow.localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, normalizedToken);
+    } else {
+      browserWindow.localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures and rely on in-memory token only.
+  }
+}
+
+export function clearSessionToken(): void {
+  setSessionToken("");
+}
+
 function getSessionToken(): string {
-  return (window as any).__HERMES_SESSION_TOKEN__ || "";
+  const browserWindow = getBrowserWindow();
+  if (!browserWindow) return "";
+
+  const runtimeToken = browserWindow.__HERMES_SESSION_TOKEN__?.trim() || "";
+  if (runtimeToken) {
+    return runtimeToken;
+  }
+
+  const storedToken = readStoredSessionToken();
+  if (storedToken) {
+    browserWindow.__HERMES_SESSION_TOKEN__ = storedToken;
+  }
+  return storedToken;
 }
 
 async function parseErrorDetail(res: Response): Promise<string> {
@@ -65,6 +120,9 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSessionToken();
+    }
     throw new ApiError(res.status, await parseErrorDetail(res));
   }
   return res.json();
@@ -154,6 +212,9 @@ export async function uploadArtifact(formData: FormData): Promise<ArtifactUpload
     body: formData,
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      clearSessionToken();
+    }
     throw new ApiError(res.status, await parseErrorDetail(res));
   }
   return res.json();

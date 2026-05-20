@@ -11,7 +11,7 @@ interface Props {
 }
 
 export function CommentSection({ artifactId, comments, onRefresh }: Props) {
-  const { authenticated } = useApp();
+  const { authenticated, currentUserLabel, authUser } = useApp();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -21,7 +21,10 @@ export function CommentSection({ artifactId, comments, onRefresh }: Props) {
     setSubmitting(true);
     setError("");
     try {
-      await createComment(artifactId, { body: body.trim() });
+      await createComment(artifactId, {
+        author: currentUserLabel || authUser?.username || "user",
+        body: body.trim(),
+      });
       setBody("");
       onRefresh();
     } catch (e) {
