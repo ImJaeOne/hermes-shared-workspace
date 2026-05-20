@@ -4,8 +4,11 @@ import type {
   ApprovalsResponse,
   ArtifactDetailResponse,
   ArtifactUploadResponse,
+  AuthSessionResponse,
   BoardResponse,
   CreateArtifactRequest,
+  LoginRequest,
+  LoginResponse,
   CreateCommentRequest,
   CreateSkillBindingRequest,
   CreateSkillRequest,
@@ -50,6 +53,14 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return res.json();
 }
+
+// --- Auth ---
+export const login = (body: LoginRequest) =>
+  fetchJSON<LoginResponse>("/auth/login", { method: "POST", body: JSON.stringify(body) });
+
+export const getAuthSession = () => fetchJSON<AuthSessionResponse>("/auth/session");
+
+export const logout = () => fetchJSON<{ ok: boolean }>("/auth/logout", { method: "POST" });
 
 // --- Agent ---
 export const getAgents = () => fetchJSON<AgentsResponse>("/agents");

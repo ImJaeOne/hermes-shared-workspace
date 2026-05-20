@@ -12,6 +12,35 @@ import type {
   WorkflowSkillBinding,
 } from "./models";
 
+// --- Auth ---
+export interface AuthUser {
+  id: string;
+  username: string;
+  display_name: string;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  ok: boolean;
+  token: string;
+  expires_at: string;
+  user: AuthUser;
+}
+
+export interface AuthSessionResponse {
+  authenticated: boolean;
+  user: AuthUser | null;
+  expires_at: string | null;
+}
+
 // --- Agent ---
 export type AgentsResponse = AgentType[];
 
