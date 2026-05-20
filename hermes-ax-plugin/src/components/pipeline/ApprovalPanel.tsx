@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import type { ApprovalRequest } from "../../types/models";
-import { decideApproval } from "../../api/client";
+import { decideApproval, getApiErrorMessage } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 
 interface Props {
@@ -9,17 +9,20 @@ interface Props {
 }
 
 export function ApprovalPanel({ approval, onDecided }: Props) {
-  const { username } = useApp();
+  const { authenticated, authLoading } = useApp();
   const [note, setNote] = useState("");
   const [deciding, setDeciding] = useState(false);
+  const [error, setError] = useState("");
 
   const handleDecide = async (status: "approved" | "rejected") => {
-    const decidedBy = username || "anonymous";
+    if (!authenticated) return;
     setDeciding(true);
+    setError("");
     try {
-      await decideApproval(approval.id, { status, decided_by: decidedBy, note });
+      await decideApproval(approval.id, { status, note: note.trim() || undefined });
       onDecided();
     } catch (e) {
+      setError(getApiErrorMessage(e, "승인 상태를 변경하지 못했습니다."));
       console.error("Failed to decide approval:", e);
     } finally {
       setDeciding(false);
@@ -36,6 +39,7 @@ export function ApprovalPanel({ approval, onDecided }: Props) {
         다음 단계로 진행하려면 승인이 필요합니다.
         {approval.stage_name && <> 대상 단계: <strong>{approval.stage_name}</strong></>}
       </p>
+      {!authenticated && <p className="ax-auth-required">로그인 후 승인 또는 반려할 수 있습니다.</p>}
       <div className="ax-approval-form">
         <textarea
           className="ax-textarea"
@@ -43,13 +47,14 @@ export function ApprovalPanel({ approval, onDecided }: Props) {
           onChange={(e) => setNote(e.target.value)}
           placeholder="사유 (선택)..."
           rows={2}
+          disabled={!authenticated || authLoading || deciding}
         />
         <div className="ax-approval-actions">
           <button
             className="ax-btn ax-btn-sm"
             style={{ background: "rgba(251,44,54,0.15)", color: "#fb2c36", borderColor: "rgba(251,44,54,0.3)" }}
             onClick={() => handleDecide("rejected")}
-            disabled={deciding}
+            disabled={!authenticated || authLoading || deciding}
           >
             반려
           </button>
@@ -57,11 +62,12 @@ export function ApprovalPanel({ approval, onDecided }: Props) {
             className="ax-btn ax-btn-sm"
             style={{ background: "rgba(74,222,128,0.15)", color: "#4ade80", borderColor: "rgba(74,222,128,0.3)" }}
             onClick={() => handleDecide("approved")}
-            disabled={deciding}
+            disabled={!authenticated || authLoading || deciding}
           >
             승인
           </button>
         </div>
+        {error && <p className="ax-form-error">{error}</p>}
       </div>
     </div>
   );

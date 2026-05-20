@@ -4,7 +4,7 @@ import type { AgentTypeId } from "../../types/models";
 import type { ViewMode } from "../../context/AppContext";
 import { UserPanel } from "./UserPanel";
 import { CreateWorkflowDialog } from "../shared/CreateWorkflowDialog";
-import { deleteTemplate } from "../../api/client";
+import { deleteTemplate, getApiErrorMessage } from "../../api/client";
 
 const AGENT_TABS: { id: AgentTypeId; label: string; icon: string }[] = [
   { id: "sales", label: "영업", icon: "TrendingUp" },
@@ -23,7 +23,7 @@ export function Header() {
     selectedAgentId, setSelectedAgentId,
     selectedTemplateId, setSelectedTemplateId,
     stats, viewMode, setViewMode, setSelectedWorkflowId,
-    pendingApprovals, username, agents, refreshAll,
+    pendingApprovals, authenticated, authLoading, currentUserLabel, agents, refreshAll,
   } = useApp();
   const [showCreate, setShowCreate] = useState(false);
   const [showUser, setShowUser] = useState(false);
@@ -50,8 +50,8 @@ export function Header() {
       await deleteTemplate(templateId);
       setSelectedTemplateId(null);
       await refreshAll();
-    } catch (err: any) {
-      alert(err.message || "삭제 실패");
+    } catch (err) {
+      alert(getApiErrorMessage(err, "삭제 실패"));
     }
   };
 
@@ -67,6 +67,7 @@ export function Header() {
 
   const agentStats = stats?.by_agent?.[selectedAgentId];
   const isSubView = viewMode !== "kanban";
+  const userButtonLabel = authLoading ? "확인 중..." : authenticated ? currentUserLabel : "로그인";
 
   return (
     <header className="ax-header">
@@ -99,7 +100,7 @@ export function Header() {
             {"+ 새 워크플로우"}
           </button>
           <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={() => setShowUser(true)}>
-            {username || "이름 설정"}
+            {userButtonLabel}
           </button>
         </div>
       </div>

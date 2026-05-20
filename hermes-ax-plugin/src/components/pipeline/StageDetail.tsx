@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import type { Artifact, StageDefinition } from "../../types/models";
 import type { WorkflowDetailResponse } from "../../types/api";
 import { ArtifactList } from "../artifacts/ArtifactList";
-import { createArtifact, uploadArtifact } from "../../api/client";
+import { createArtifact, getApiErrorMessage, uploadArtifact } from "../../api/client";
+import { useApp } from "../../context/AppContext";
 
 interface Props {
   stage: StageDefinition & { is_completed: boolean; is_current: boolean };
@@ -12,23 +13,25 @@ interface Props {
 }
 
 export function StageDetail({ stage, artifacts, workflow, onRefresh }: Props) {
+  const { authenticated, authLoading } = useApp();
   const [showAdd, setShowAdd] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newType, setNewType] = useState("");
   const [newContent, setNewContent] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
   const expectedTypes: string[] = (() => {
     try { return JSON.parse(stage.expected_artifacts); } catch { return []; }
   })();
 
   const handleAddArtifact = async () => {
-    if (!newTitle.trim() || !newType) return;
+    if (!newTitle.trim() || !newType || !authenticated) return;
     setSubmitting(true);
+    setError("");
     try {
       if (selectedFile) {
-        // File upload
         const formData = new FormData();
         formData.append("workflow_id", workflow.id);
         formData.append("stage_id", stage.id);
@@ -38,7 +41,6 @@ export function StageDetail({ stage, artifacts, workflow, onRefresh }: Props) {
         formData.append("file", selectedFile);
         await uploadArtifact(formData);
       } else {
-        // Text content
         await createArtifact({
           workflow_id: workflow.id,
           stage_id: stage.id,
@@ -55,6 +57,7 @@ export function StageDetail({ stage, artifacts, workflow, onRefresh }: Props) {
       setShowAdd(false);
       onRefresh();
     } catch (e) {
+      setError(getApiErrorMessage(e, "산출물을 추가하지 못했습니다."));
       console.error("Failed to create artifact:", e);
     } finally {
       setSubmitting(false);
@@ -78,12 +81,14 @@ export function StageDetail({ stage, artifacts, workflow, onRefresh }: Props) {
             <span className="ax-stage-expected">예상 산출물: {expectedTypes.join(", ")}</span>
           )}
         </div>
-        <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={() => setShowAdd(!showAdd)}>
+        <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={() => setShowAdd(!showAdd)} disabled={!authenticated || authLoading}>
           {showAdd ? "취소" : "+ 산출물 추가"}
         </button>
       </div>
 
-      {showAdd && (
+      {!authenticated && <p className="ax-auth-required">로그인 후 산출물을 추가할 수 있습니다.</p>}
+
+      {showAdd && authenticated && (
         <div className="ax-add-artifact">
           <label className="ax-label">
             유형
@@ -123,6 +128,7 @@ export function StageDetail({ stage, artifacts, workflow, onRefresh }: Props) {
           <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={handleAddArtifact} disabled={!newTitle.trim() || !newType || submitting}>
             {submitting ? "추가 중..." : "산출물 추가"}
           </button>
+          {error && <p className="ax-form-error">{error}</p>}
         </div>
       )}
 

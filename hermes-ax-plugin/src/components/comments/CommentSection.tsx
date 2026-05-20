@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import type { Comment } from "../../types/models";
 import { useApp } from "../../context/AppContext";
-import { createComment } from "../../api/client";
+import { createComment, getApiErrorMessage } from "../../api/client";
 import { CommentItem } from "./CommentItem";
 
 interface Props {
@@ -11,18 +11,21 @@ interface Props {
 }
 
 export function CommentSection({ artifactId, comments, onRefresh }: Props) {
-  const { username } = useApp();
+  const { authenticated } = useApp();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
   const handleSubmit = async () => {
-    if (!body.trim() || !username) return;
+    if (!body.trim() || !authenticated) return;
     setSubmitting(true);
+    setError("");
     try {
-      await createComment(artifactId, { author: username, body: body.trim() });
+      await createComment(artifactId, { body: body.trim() });
       setBody("");
       onRefresh();
     } catch (e) {
+      setError(getApiErrorMessage(e, "코멘트를 등록하지 못했습니다."));
       console.error("Failed to add comment:", e);
     } finally {
       setSubmitting(false);
@@ -42,8 +45,8 @@ export function CommentSection({ artifactId, comments, onRefresh }: Props) {
       )}
 
       <div className="ax-comment-form">
-        {!username ? (
-          <p className="ax-hint">코멘트를 남기려면 사용자명을 설정하세요.</p>
+        {!authenticated ? (
+          <p className="ax-auth-required">로그인 후 코멘트를 남길 수 있습니다.</p>
         ) : (
           <>
             <textarea
@@ -68,6 +71,7 @@ export function CommentSection({ artifactId, comments, onRefresh }: Props) {
             </div>
           </>
         )}
+        {error && <p className="ax-form-error">{error}</p>}
       </div>
     </div>
   );

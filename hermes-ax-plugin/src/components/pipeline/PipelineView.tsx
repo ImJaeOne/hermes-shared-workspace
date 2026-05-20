@@ -1,72 +1,80 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useApp } from "../../context/AppContext";
-import { getWorkflow, transitionWorkflow, updateWorkflow } from "../../api/client";
+import { getApiErrorMessage, getWorkflow, transitionWorkflow, updateWorkflow } from "../../api/client";
 import type { WorkflowDetailResponse } from "../../types/api";
 import { StageTimeline } from "./StageTimeline";
 import { StageDetail } from "./StageDetail";
 import { ApprovalPanel } from "./ApprovalPanel";
+import { ActivityTimeline } from "./ActivityTimeline";
 import { StatusBadge, PriorityBadge } from "../shared/StatusBadge";
 import { EmptyState } from "../shared/EmptyState";
 
 export function PipelineView() {
-  const { selectedWorkflowId, refreshBoard, refreshApprovals } = useApp();
+  const { selectedWorkflowId, refreshBoard, refreshApprovals, authenticated, authLoading } = useApp();
   const [workflow, setWorkflow] = useState<WorkflowDetailResponse | null>(null);
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState("");
 
   const loadWorkflow = useCallback(async () => {
-    if (!selectedWorkflowId) return;
+    if (!selectedWorkflowId) {
+      setWorkflow(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     try {
       const data = await getWorkflow(selectedWorkflowId);
       setWorkflow(data);
-      if (!selectedStageId) {
-        setSelectedStageId(data.current_stage_id);
-      }
+      setSelectedStageId((prev) => prev ?? data.current_stage_id);
     } catch (e) {
       console.error("Failed to load workflow:", e);
     } finally {
       setLoading(false);
     }
-  }, [selectedWorkflowId, selectedStageId]);
+  }, [selectedWorkflowId]);
 
   useEffect(() => {
-    loadWorkflow();
+    void loadWorkflow();
   }, [loadWorkflow]);
 
   const handleTransition = async (toStageId: string) => {
-    if (!workflow) return;
+    if (!workflow || !authenticated) return;
+    setActionError("");
     try {
-      const result = await transitionWorkflow(workflow.id, { to_stage_id: toStageId, triggered_by: "user" });
+      const result = await transitionWorkflow(workflow.id, { to_stage_id: toStageId });
       if (result.pending_approval) {
-        // Transition requires approval, reload to show pending state
         await loadWorkflow();
-        refreshBoard();
-        refreshApprovals();
+        await refreshBoard();
+        await refreshApprovals();
       } else {
         setSelectedStageId(toStageId);
         await loadWorkflow();
-        refreshBoard();
+        await refreshBoard();
       }
     } catch (e) {
+      setActionError(getApiErrorMessage(e, "단계를 전환하지 못했습니다."));
       console.error("Transition failed:", e);
     }
   };
 
   const handleStatusChange = async (status: string) => {
-    if (!workflow) return;
+    if (!workflow || !authenticated) return;
+    setActionError("");
     try {
       await updateWorkflow(workflow.id, { status });
       await loadWorkflow();
-      refreshBoard();
+      await refreshBoard();
     } catch (e) {
+      setActionError(getApiErrorMessage(e, "상태를 변경하지 못했습니다."));
       console.error("Status change failed:", e);
     }
   };
 
   const handleApprovalDecided = async () => {
     await loadWorkflow();
-    refreshBoard();
-    refreshApprovals();
+    await refreshBoard();
+    await refreshApprovals();
   };
 
   if (loading) {
@@ -82,6 +90,7 @@ export function PipelineView() {
   const nextStage = workflow.stages.find((s) => s.stage_order === currentStageOrder + 1);
   const stageArtifacts = workflow.artifacts.filter((a) => a.stage_id === selectedStageId);
   const isPendingApproval = workflow.status === "pending_approval";
+  const writeDisabled = !authenticated || authLoading;
 
   return (
     <div className="ax-pipeline">
@@ -96,21 +105,24 @@ export function PipelineView() {
         </div>
         <div className="ax-pipeline-actions">
           {workflow.status === "active" && nextStage && (
-            <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={() => handleTransition(nextStage.id)}>
-              {nextStage.name}(으)로 진행 &rarr;
+            <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={() => handleTransition(nextStage.id)} disabled={writeDisabled}>
+              {nextStage.name}(으)로 진행 →
             </button>
           )}
           {workflow.status === "active" && (
             <>
-              <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={() => handleStatusChange("paused")}>일시정지</button>
-              <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={() => handleStatusChange("completed")}>완료</button>
+              <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={() => handleStatusChange("paused")} disabled={writeDisabled}>일시정지</button>
+              <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={() => handleStatusChange("completed")} disabled={writeDisabled}>완료</button>
             </>
           )}
           {workflow.status === "paused" && (
-            <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={() => handleStatusChange("active")}>재개</button>
+            <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={() => handleStatusChange("active")} disabled={writeDisabled}>재개</button>
           )}
         </div>
       </div>
+
+      {!authenticated && <p className="ax-auth-required">로그인 후 워크플로우 전환과 상태 변경을 사용할 수 있습니다.</p>}
+      {actionError && <p className="ax-form-error ax-action-error">{actionError}</p>}
 
       {isPendingApproval && workflow.pending_approval && (
         <ApprovalPanel approval={workflow.pending_approval} onDecided={handleApprovalDecided} />
@@ -131,6 +143,8 @@ export function PipelineView() {
         />
       )}
 
+      <ActivityTimeline activityLogs={workflow.activity_logs} stages={workflow.stages} />
+
       {workflow.transitions.length > 0 && (
         <div className="ax-transitions">
           <h3 className="ax-section-title">전환 이력</h3>
@@ -140,10 +154,10 @@ export function PipelineView() {
               const toName = workflow.stages.find((s) => s.id === t.to_stage_id)?.name || "?";
               return (
                 <div key={t.id} className="ax-transition-item">
-                  <span className="ax-transition-flow">{fromName} &rarr; {toName}</span>
+                  <span className="ax-transition-flow">{fromName} → {toName}</span>
                   <span className="ax-transition-by">{t.triggered_by}</span>
                   {t.note && <span className="ax-transition-note">{t.note}</span>}
-                  <span className="ax-transition-time">{new Date(t.created_at).toLocaleString()}</span>
+                  <span className="ax-transition-time">{new Date(t.created_at).toLocaleString("ko-KR")}</span>
                 </div>
               );
             })}
