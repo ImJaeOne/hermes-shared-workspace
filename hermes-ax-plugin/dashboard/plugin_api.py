@@ -12,11 +12,11 @@ import shutil
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -34,7 +34,10 @@ SCHEMA_VERSION = 3
 BOOTSTRAP_ADMIN_USERNAME_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_USERNAME"
 BOOTSTRAP_ADMIN_PASSWORD_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_PASSWORD"
 BOOTSTRAP_ADMIN_DISPLAY_NAME_ENV = "HERMES_AX_BOOTSTRAP_ADMIN_DISPLAY_NAME"
+AX_SESSION_COOKIE_SECURE_ENV = "HERMES_AX_SESSION_COOKIE_SECURE"
 PASSWORD_HASH_ITERATIONS = 390_000
+AX_SESSION_COOKIE = "hermes_ax_session"
+AUTH_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -75,6 +78,122 @@ def _verify_password(password: str, password_hash: str) -> bool:
         return hmac.compare_digest(candidate, f"{algorithm}${iterations}${salt}${digest}")
     except ValueError:
         return False
+
+
+def _hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_timestamp(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _serialize_user(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "role": row["role"],
+        "is_active": bool(row["is_active"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _create_auth_session(conn: sqlite3.Connection, user_id: str) -> dict[str, str]:
+    now_dt = datetime.now(timezone.utc)
+    expires_dt = now_dt + timedelta(seconds=AUTH_SESSION_TTL_SECONDS)
+    session_token = secrets.token_urlsafe(32)
+    session_id = _uuid("axs_")
+    now = now_dt.isoformat()
+    expires_at = expires_dt.isoformat()
+    conn.execute(
+        """INSERT INTO auth_sessions
+           (id, user_id, session_token_hash, expires_at, created_at, last_seen_at)
+           VALUES (?,?,?,?,?,?)""",
+        (session_id, user_id, _hash_session_token(session_token), expires_at, now, now),
+    )
+    return {
+        "id": session_id,
+        "token": session_token,
+        "expires_at": expires_at,
+        "created_at": now,
+        "last_seen_at": now,
+    }
+
+
+def _get_request_session_token(request: Request) -> str:
+    header_token = request.headers.get("X-Hermes-Session-Token", "").strip()
+    if header_token:
+        return header_token
+    return request.cookies.get(AX_SESSION_COOKIE, "").strip()
+
+
+def _get_authenticated_session(conn: sqlite3.Connection, token: str) -> dict[str, Any] | None:
+    if not token:
+        return None
+
+    row = conn.execute(
+        """SELECT
+               s.id,
+               s.user_id,
+               s.expires_at,
+               s.created_at,
+               s.last_seen_at,
+               u.username,
+               u.display_name,
+               u.role,
+               u.is_active,
+               u.created_at AS user_created_at,
+               u.updated_at AS user_updated_at
+           FROM auth_sessions s
+           JOIN users u ON u.id = s.user_id
+           WHERE s.session_token_hash=?""",
+        (_hash_session_token(token),),
+    ).fetchone()
+    if not row:
+        return None
+
+    if not row["is_active"]:
+        conn.execute("DELETE FROM auth_sessions WHERE id=?", (row["id"],))
+        return None
+
+    if _parse_timestamp(row["expires_at"]) <= datetime.now(timezone.utc):
+        conn.execute("DELETE FROM auth_sessions WHERE id=?", (row["id"],))
+        return None
+
+    last_seen_at = _now()
+    conn.execute("UPDATE auth_sessions SET last_seen_at=? WHERE id=?", (last_seen_at, row["id"]))
+    return {
+        "session": {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "expires_at": row["expires_at"],
+            "created_at": row["created_at"],
+            "last_seen_at": last_seen_at,
+        },
+        "user": {
+            "id": row["user_id"],
+            "username": row["username"],
+            "display_name": row["display_name"],
+            "role": row["role"],
+            "is_active": bool(row["is_active"]),
+            "created_at": row["user_created_at"],
+            "updated_at": row["user_updated_at"],
+        },
+    }
 
 
 def _get_bootstrap_admin_config() -> dict[str, str] | None:
@@ -796,6 +915,77 @@ class DecideApprovalBody(BaseModel):
     status: str  # 'approved' or 'rejected'
     decided_by: str
     note: str = ""
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+# ---------------------------------------------------------------------------
+# API: Auth
+# ---------------------------------------------------------------------------
+
+@router.post("/auth/login")
+def login(body: LoginBody, response: Response):
+    username = _normalize_username(body.username)
+    password = body.password.strip()
+    if not username or not password:
+        raise HTTPException(400, "Username and password are required")
+
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        if not user or not user["is_active"] or not _verify_password(password, user["password_hash"]):
+            raise HTTPException(401, "Invalid username or password")
+
+        session = _create_auth_session(conn, user["id"])
+
+    response.set_cookie(
+        key=AX_SESSION_COOKIE,
+        value=session["token"],
+        httponly=True,
+        samesite="lax",
+        secure=_env_flag(AX_SESSION_COOKIE_SECURE_ENV, default=False),
+        max_age=AUTH_SESSION_TTL_SECONDS,
+        path="/",
+    )
+    return {
+        "ok": True,
+        "token": session["token"],
+        "expires_at": session["expires_at"],
+        "user": _serialize_user(user),
+    }
+
+
+@router.get("/auth/session")
+def get_auth_session(request: Request, response: Response):
+    token = _get_request_session_token(request)
+    with get_db() as conn:
+        auth = _get_authenticated_session(conn, token)
+
+    if not auth:
+        response.delete_cookie(key=AX_SESSION_COOKIE, path="/")
+        return {"authenticated": False, "user": None, "expires_at": None}
+
+    return {
+        "authenticated": True,
+        "user": auth["user"],
+        "expires_at": auth["session"]["expires_at"],
+    }
+
+
+@router.post("/auth/logout")
+def logout(request: Request, response: Response):
+    token = _get_request_session_token(request)
+    with get_db() as conn:
+        if token:
+            conn.execute(
+                "DELETE FROM auth_sessions WHERE session_token_hash=?",
+                (_hash_session_token(token),),
+            )
+
+    response.delete_cookie(key=AX_SESSION_COOKIE, path="/")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
