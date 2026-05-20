@@ -32,8 +32,25 @@ import type { Skill, WorkflowDefinition, WorkflowSkillBinding } from "../types/m
 
 const API_BASE = "/api/plugins/hermes-ax";
 
+export class ApiError extends Error {
+  status: number;
+  detail: string;
+
+  constructor(status: number, detail: string) {
+    super(`API ${status}: ${detail}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 function getSessionToken(): string {
   return (window as any).__HERMES_SESSION_TOKEN__ || "";
+}
+
+async function parseErrorDetail(res: Response): Promise<string> {
+  const text = await res.text().catch(() => res.statusText);
+  return text || res.statusText || "요청을 처리하지 못했습니다.";
 }
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
@@ -48,10 +65,30 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`API ${res.status}: ${text}`);
+    throw new ApiError(res.status, await parseErrorDetail(res));
   }
   return res.json();
+}
+
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError;
+}
+
+export function isUnauthorizedError(error: unknown): boolean {
+  return isApiError(error) && error.status === 401;
+}
+
+export function getApiErrorMessage(error: unknown, fallback: string = "요청을 처리하지 못했습니다."): string {
+  if (isApiError(error)) {
+    if (error.status === 401) {
+      return "로그인이 필요합니다.";
+    }
+    return error.detail || fallback;
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return fallback;
 }
 
 // --- Auth ---
@@ -117,8 +154,7 @@ export async function uploadArtifact(formData: FormData): Promise<ArtifactUpload
     body: formData,
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`API ${res.status}: ${text}`);
+    throw new ApiError(res.status, await parseErrorDetail(res));
   }
   return res.json();
 }

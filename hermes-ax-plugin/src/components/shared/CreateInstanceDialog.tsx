@@ -1,23 +1,25 @@
 import React, { useState } from "react";
 import { useApp } from "../../context/AppContext";
-import { createWorkflow } from "../../api/client";
+import { createWorkflow, getApiErrorMessage } from "../../api/client";
 
 interface Props {
   onClose: () => void;
 }
 
 export function CreateInstanceDialog({ onClose }: Props) {
-  const { boardData, refreshBoard } = useApp();
+  const { boardData, refreshBoard, authenticated, authLoading } = useApp();
   const [title, setTitle] = useState("");
   const [priority, setPriority] = useState(0);
   const [assignee, setAssignee] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
   const templateId = boardData?.template_id;
 
   const handleSubmit = async () => {
-    if (!title.trim() || !templateId) return;
+    if (!title.trim() || !templateId || !authenticated) return;
     setSubmitting(true);
+    setError("");
     try {
       await createWorkflow({
         template_id: templateId,
@@ -28,6 +30,7 @@ export function CreateInstanceDialog({ onClose }: Props) {
       await refreshBoard();
       onClose();
     } catch (e) {
+      setError(getApiErrorMessage(e, "워크플로우를 생성하지 못했습니다."));
       console.error("Failed to create workflow:", e);
     } finally {
       setSubmitting(false);
@@ -41,6 +44,7 @@ export function CreateInstanceDialog({ onClose }: Props) {
           <h2>새 티켓 생성</h2>
         </div>
         <div className="ax-dialog-body">
+          {!authenticated && <p className="ax-auth-required">로그인 후 새 티켓을 생성할 수 있습니다.</p>}
           <label className="ax-label">
             제목
             <input
@@ -69,10 +73,11 @@ export function CreateInstanceDialog({ onClose }: Props) {
               placeholder="선택사항"
             />
           </label>
+          {error && <p className="ax-form-error">{error}</p>}
         </div>
         <div className="ax-dialog-footer">
           <button className="ax-btn ax-btn-ghost" onClick={onClose}>취소</button>
-          <button className="ax-btn ax-btn-primary" onClick={handleSubmit} disabled={!title.trim() || !templateId || submitting}>
+          <button className="ax-btn ax-btn-primary" onClick={handleSubmit} disabled={!title.trim() || !templateId || !authenticated || authLoading || submitting}>
             {submitting ? "생성 중..." : "생성"}
           </button>
         </div>

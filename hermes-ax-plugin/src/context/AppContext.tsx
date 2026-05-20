@@ -1,13 +1,29 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { AgentType, AgentTypeId, ApprovalRequest, Skill } from "../types/models";
-import type { BoardResponse, StatsResponse } from "../types/api";
-import { getAgents, getApprovals, getBoard, getSkills, getStats, usePolling } from "../api/client";
+import type { AuthUser, BoardResponse, LoginRequest, StatsResponse } from "../types/api";
+import {
+  getAgents,
+  getApprovals,
+  getAuthSession,
+  getBoard,
+  getSkills,
+  getStats,
+  login as loginRequest,
+  logout as logoutRequest,
+  usePolling,
+} from "../api/client";
 
 export type ViewMode = "kanban" | "pipeline" | "skills" | "definition";
 
 interface AppState {
-  username: string;
-  setUsername: (name: string) => void;
+  authUser: AuthUser | null;
+  authExpiresAt: string | null;
+  authenticated: boolean;
+  authLoading: boolean;
+  currentUserLabel: string;
+  login: (payload: LoginRequest) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshAuthSession: () => Promise<void>;
   selectedAgentId: AgentTypeId;
   setSelectedAgentId: (id: AgentTypeId) => void;
   selectedTemplateId: string | null;
@@ -22,10 +38,10 @@ interface AppState {
   skills: Skill[];
   pendingApprovals: ApprovalRequest[];
   loading: boolean;
-  refreshBoard: () => void;
-  refreshAll: () => void;
-  refreshSkills: () => void;
-  refreshApprovals: () => void;
+  refreshBoard: () => Promise<void>;
+  refreshAll: () => Promise<void>;
+  refreshSkills: () => Promise<void>;
+  refreshApprovals: () => Promise<void>;
 }
 
 const AppContext = createContext<AppState | null>(null);
@@ -37,7 +53,9 @@ export function useApp(): AppState {
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [username, setUsernameState] = useState(() => localStorage.getItem("ax_username") || "");
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authExpiresAt, setAuthExpiresAt] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [selectedAgentId, setSelectedAgentIdRaw] = useState<AgentTypeId>("sales");
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("kanban");
@@ -47,6 +65,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setSelectedAgentIdRaw(id);
     setSelectedTemplateId(null);
   }, []);
+
   const [agents, setAgents] = useState<AgentType[]>([]);
   const [boardData, setBoardData] = useState<BoardResponse | null>(null);
   const [stats, setStats] = useState<StatsResponse | null>(null);
@@ -56,9 +75,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const { needsRefresh, clearRefresh } = usePolling(7000);
 
-  const setUsername = useCallback((name: string) => {
-    localStorage.setItem("ax_username", name);
-    setUsernameState(name);
+  const refreshAuthSession = useCallback(async () => {
+    setAuthLoading(true);
+    try {
+      const session = await getAuthSession();
+      setAuthUser(session.authenticated ? session.user : null);
+      setAuthExpiresAt(session.authenticated ? session.expires_at : null);
+    } catch (e) {
+      console.error("Failed to load auth session:", e);
+      setAuthUser(null);
+      setAuthExpiresAt(null);
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  const login = useCallback(async (payload: LoginRequest) => {
+    setAuthLoading(true);
+    try {
+      const response = await loginRequest(payload);
+      setAuthUser(response.user);
+      setAuthExpiresAt(response.expires_at);
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  const logout = useCallback(async () => {
+    setAuthLoading(true);
+    try {
+      await logoutRequest();
+      setAuthUser(null);
+      setAuthExpiresAt(null);
+    } finally {
+      setAuthLoading(false);
+    }
   }, []);
 
   const loadAgents = useCallback(async () => {
@@ -100,35 +151,42 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const refreshAll = useCallback(async () => {
     setLoading(true);
-    await loadAgents();
-    await Promise.all([refreshBoard(), refreshSkills(), refreshApprovals()]);
+    await Promise.all([loadAgents(), refreshBoard(), refreshSkills(), refreshApprovals(), refreshAuthSession()]);
     setLoading(false);
-  }, [loadAgents, refreshBoard, refreshSkills, refreshApprovals]);
+  }, [loadAgents, refreshBoard, refreshSkills, refreshApprovals, refreshAuthSession]);
 
-  // Initial load
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
 
-  // Refresh on agent or template change
   useEffect(() => {
     refreshBoard();
   }, [selectedAgentId, selectedTemplateId, refreshBoard]);
 
-  // Polling refresh
   useEffect(() => {
     if (needsRefresh) {
-      refreshBoard();
-      refreshApprovals();
+      void refreshBoard();
+      void refreshApprovals();
       clearRefresh();
     }
   }, [needsRefresh, clearRefresh, refreshBoard, refreshApprovals]);
 
+  const currentUserLabel = useMemo(() => {
+    if (!authUser) return "";
+    return authUser.display_name?.trim() || authUser.username;
+  }, [authUser]);
+
   return (
     <AppContext.Provider
       value={{
-        username,
-        setUsername,
+        authUser,
+        authExpiresAt,
+        authenticated: Boolean(authUser),
+        authLoading,
+        currentUserLabel,
+        login,
+        logout,
+        refreshAuthSession,
         selectedAgentId,
         setSelectedAgentId,
         selectedTemplateId,
