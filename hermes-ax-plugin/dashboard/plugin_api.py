@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import json
 import mimetypes
-import os
 import secrets
 import shutil
 import sqlite3
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -31,6 +28,7 @@ try:
     )
     from .bootstrap import _upsert_bootstrap_admin
     from .common import _now, _uuid
+    from .db import ARTIFACTS_DIR, get_db
     from .db_schema import SCHEMA_SQL, _run_migrations
     from .seed import seed_if_empty
     from .rows import row_to_dict, rows_to_list
@@ -66,6 +64,7 @@ except ImportError:
     )
     from bootstrap import _upsert_bootstrap_admin
     from common import _now, _uuid
+    from db import ARTIFACTS_DIR, get_db
     from db_schema import SCHEMA_SQL, _run_migrations
     from seed import seed_if_empty
     from rows import row_to_dict, rows_to_list
@@ -89,11 +88,6 @@ except ImportError:
 
 router = APIRouter()
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
-PLUGIN_DATA_DIR = HERMES_HOME / "plugins" / "hermes-ax-plugin"
-DB_DIR = PLUGIN_DATA_DIR
-DB_PATH = DB_DIR / "ax.db"
-ARTIFACTS_DIR = DB_DIR / "artifacts"
 
 def _require_authenticated_user(conn: sqlite3.Connection, request: Request) -> dict[str, Any]:
     token = _get_request_session_token(request)
@@ -185,20 +179,6 @@ def _get_authenticated_session(conn: sqlite3.Connection, token: str) -> dict[str
             "updated_at": row["user_updated_at"],
         },
     }
-
-
-@contextmanager
-def get_db():
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _emit_event(conn: sqlite3.Connection, kind: str, workflow_id: str | None = None, artifact_id: str | None = None, payload: dict | None = None):
