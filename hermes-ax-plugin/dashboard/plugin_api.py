@@ -33,6 +33,7 @@ try:
     from .bootstrap import _upsert_bootstrap_admin
     from .db_schema import SCHEMA_SQL, _run_migrations
     from .seed import seed_if_empty
+    from .rows import row_to_dict, rows_to_list
     from .schemas import (
         CreateArtifactBody,
         CreateCommentBody,
@@ -66,6 +67,7 @@ except ImportError:
     from bootstrap import _upsert_bootstrap_admin
     from db_schema import SCHEMA_SQL, _run_migrations
     from seed import seed_if_empty
+    from rows import row_to_dict, rows_to_list
     from schemas import (
         CreateArtifactBody,
         CreateCommentBody,
@@ -206,15 +208,6 @@ def get_db():
     finally:
         conn.close()
 
-
-def row_to_dict(row: sqlite3.Row | None) -> dict | None:
-    if row is None:
-        return None
-    return dict(row)
-
-
-def rows_to_list(rows: list) -> list[dict]:
-    return [dict(r) for r in rows]
 
 def _emit_event(conn: sqlite3.Connection, kind: str, workflow_id: str | None = None, artifact_id: str | None = None, payload: dict | None = None):
     conn.execute(
