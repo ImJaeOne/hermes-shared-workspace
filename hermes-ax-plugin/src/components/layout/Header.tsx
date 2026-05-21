@@ -7,15 +7,13 @@ import { CreateWorkflowDialog } from "../shared/CreateWorkflowDialog";
 import { deleteTemplate, getApiErrorMessage } from "../../api/client";
 
 const AGENT_TABS: { id: AgentTypeId; label: string; icon: string }[] = [
-  { id: "sales", label: "영업", icon: "TrendingUp" },
-  { id: "marketing", label: "마케팅", icon: "Megaphone" },
-  { id: "support", label: "지원", icon: "HeadphonesIcon" },
+  { id: "planning", label: "기획", icon: "ClipboardList" },
+  { id: "design", label: "디자인", icon: "PenTool" },
 ];
 
 const AGENT_COLORS: Record<AgentTypeId, string> = {
-  sales: "#f59e0b",
-  marketing: "#8b5cf6",
-  support: "#10b981",
+  planning: "#3b82f6",
+  design: "#ec4899",
 };
 
 export function Header() {

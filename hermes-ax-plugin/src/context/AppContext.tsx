@@ -58,7 +58,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authExpiresAt, setAuthExpiresAt] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [selectedAgentId, setSelectedAgentIdRaw] = useState<AgentTypeId>("sales");
+  const [selectedAgentId, setSelectedAgentIdRaw] = useState<AgentTypeId>("planning");
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("kanban");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
@@ -173,6 +173,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refreshBoard();
   }, [selectedAgentId, selectedTemplateId, refreshBoard]);
+
+  useEffect(() => {
+    if (agents.length > 0 && !agents.some((agent) => agent.id === selectedAgentId)) {
+      setSelectedAgentIdRaw(agents[0].id as AgentTypeId);
+      setSelectedTemplateId(null);
+    }
+  }, [agents, selectedAgentId]);
 
   useEffect(() => {
     if (needsRefresh) {
