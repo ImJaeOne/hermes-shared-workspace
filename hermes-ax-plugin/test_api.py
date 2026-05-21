@@ -24,6 +24,8 @@ app = FastAPI()
 app.include_router(plugin_api.router)
 client = TestClient(app)
 anon = TestClient(app)
+PARENT_GATE_HEADERS = {"X-Hermes-Session-Token": "parent-dashboard-token"}
+client.headers.update(PARENT_GATE_HEADERS)
 
 passed = 0
 failed = 0
@@ -56,7 +58,7 @@ print("\n=== Auth ===")
 r = anon.post("/workflows", json={
     "template_id": "planning_pipeline_v1",
     "title": "Unauthorized Workflow",
-})
+}, headers=PARENT_GATE_HEADERS)
 check("unauthenticated write blocked", r.status_code == 401, f"got {r.status_code}")
 login_and_check()
 

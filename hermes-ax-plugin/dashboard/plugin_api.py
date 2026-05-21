@@ -23,6 +23,13 @@ try:
     from .skills_api import router as skills_router
     from .seed import seed_if_empty
 except ImportError:
+    import os
+    import sys
+
+    _dashboard_dir = os.path.dirname(os.path.abspath(__file__))
+    if _dashboard_dir not in sys.path:
+        sys.path.insert(0, _dashboard_dir)
+
     from events import _emit_event
     from bootstrap import _upsert_bootstrap_admin
     from common import _now
