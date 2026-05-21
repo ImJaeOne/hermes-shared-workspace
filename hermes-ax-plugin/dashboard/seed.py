@@ -7,89 +7,129 @@ from typing import Any, Callable
 SEED_DATA: dict[str, Any] = {
     "agents": [
         {
-            "id": "sales",
-            "name": "Sales Agent",
-            "description": "영업 파이프라인 — 리드 유입부터 계약 완료까지",
-            "icon": "TrendingUp",
-            "color": "#f59e0b",
+            "id": "planning",
+            "name": "Planning Agent",
+            "description": "기획 파이프라인 — 리서치부터 최종 브리핑까지",
+            "icon": "ClipboardList",
+            "color": "#3b82f6",
         },
         {
-            "id": "marketing",
-            "name": "Marketing Agent",
-            "description": "캠페인 파이프라인 — 기획부터 분석까지",
-            "icon": "Megaphone",
-            "color": "#8b5cf6",
-        },
-        {
-            "id": "support",
-            "name": "Support Agent",
-            "description": "티켓 해결 파이프라인 — 접수부터 후속 조치까지",
-            "icon": "HeadphonesIcon",
-            "color": "#10b981",
+            "id": "design",
+            "name": "Design Agent",
+            "description": "디자인 파이프라인 — 탐색부터 핸드오프까지",
+            "icon": "PenTool",
+            "color": "#ec4899",
         },
     ],
     "templates": [
-        {"id": "sales_pipeline_v1", "agent_type_id": "sales", "name": "Sales Pipeline v1"},
-        {"id": "mktg_blog", "agent_type_id": "marketing", "name": "블로그"},
-        {"id": "mktg_cardnews", "agent_type_id": "marketing", "name": "카드뉴스"},
-        {"id": "support_pipeline_v1", "agent_type_id": "support", "name": "Support Pipeline v1"},
+        {"id": "planning_pipeline_v1", "agent_type_id": "planning", "name": "Planning Pipeline v1"},
+        {"id": "design_pipeline_v1", "agent_type_id": "design", "name": "Design Pipeline v1"},
     ],
     "stages": [
-        {"id": "s_lead", "template_id": "sales_pipeline_v1", "name": "Lead In", "slug": "lead-in", "stage_order": 0, "expected_artifacts": '["contact_info"]'},
-        {"id": "s_qual", "template_id": "sales_pipeline_v1", "name": "Qualification", "slug": "qualification", "stage_order": 1, "expected_artifacts": '["email","meeting_notes"]'},
-        {"id": "s_prop", "template_id": "sales_pipeline_v1", "name": "Proposal", "slug": "proposal", "stage_order": 2, "expected_artifacts": '["proposal","email"]', "transition_mode": "approval_required", "approval_roles": '["manager"]'},
-        {"id": "s_nego", "template_id": "sales_pipeline_v1", "name": "Negotiation", "slug": "negotiation", "stage_order": 3, "expected_artifacts": '["contract","email"]'},
-        {"id": "s_close", "template_id": "sales_pipeline_v1", "name": "Close", "slug": "close", "stage_order": 4, "expected_artifacts": '["contract","report"]', "transition_mode": "approval_required", "approval_roles": '["manager","director"]'},
-        {"id": "mb_topic", "template_id": "mktg_blog", "name": "주제 선정", "slug": "topic", "stage_order": 0, "expected_artifacts": '["brief"]'},
-        {"id": "mb_draft", "template_id": "mktg_blog", "name": "초안 작성", "slug": "draft", "stage_order": 1, "expected_artifacts": '["content_draft"]'},
-        {"id": "mb_review", "template_id": "mktg_blog", "name": "리뷰", "slug": "review", "stage_order": 2, "expected_artifacts": '["content_draft"]', "transition_mode": "approval_required", "approval_roles": '["manager"]'},
-        {"id": "mb_publish", "template_id": "mktg_blog", "name": "발행", "slug": "publish", "stage_order": 3, "expected_artifacts": '["report"]'},
-        {"id": "mc_plan", "template_id": "mktg_cardnews", "name": "기획", "slug": "plan", "stage_order": 0, "expected_artifacts": '["brief"]'},
-        {"id": "mc_design", "template_id": "mktg_cardnews", "name": "디자인", "slug": "design", "stage_order": 1, "expected_artifacts": '["content_draft"]'},
-        {"id": "mc_copy", "template_id": "mktg_cardnews", "name": "카피 작성", "slug": "copy", "stage_order": 2, "expected_artifacts": '["content_draft"]'},
-        {"id": "mc_approve", "template_id": "mktg_cardnews", "name": "승인", "slug": "approve", "stage_order": 3, "expected_artifacts": '["report"]', "transition_mode": "approval_required", "approval_roles": '["manager"]'},
-        {"id": "mc_dist", "template_id": "mktg_cardnews", "name": "배포", "slug": "distribute", "stage_order": 4, "expected_artifacts": '["report"]'},
-        {"id": "t_created", "template_id": "support_pipeline_v1", "name": "Ticket Created", "slug": "created", "stage_order": 0, "expected_artifacts": '["ticket"]'},
-        {"id": "t_triage", "template_id": "support_pipeline_v1", "name": "Triage", "slug": "triage", "stage_order": 1, "expected_artifacts": '["ticket","log"]'},
-        {"id": "t_invest", "template_id": "support_pipeline_v1", "name": "Investigation", "slug": "investigation", "stage_order": 2, "expected_artifacts": '["log","meeting_notes"]'},
-        {"id": "t_resolve", "template_id": "support_pipeline_v1", "name": "Resolution", "slug": "resolution", "stage_order": 3, "expected_artifacts": '["resolution_note"]'},
-        {"id": "t_follow", "template_id": "support_pipeline_v1", "name": "Follow-up", "slug": "followup", "stage_order": 4, "expected_artifacts": '["email","report"]'},
+        {
+            "id": "p_discovery",
+            "template_id": "planning_pipeline_v1",
+            "name": "Discovery",
+            "slug": "discovery",
+            "stage_order": 0,
+            "expected_artifacts": '["brief","meeting_notes"]',
+        },
+        {
+            "id": "p_brief",
+            "template_id": "planning_pipeline_v1",
+            "name": "Brief Draft",
+            "slug": "brief-draft",
+            "stage_order": 1,
+            "expected_artifacts": '["brief"]',
+        },
+        {
+            "id": "p_review",
+            "template_id": "planning_pipeline_v1",
+            "name": "Stakeholder Review",
+            "slug": "review",
+            "stage_order": 2,
+            "expected_artifacts": '["meeting_notes","email"]',
+            "transition_mode": "approval_required",
+            "approval_roles": '["manager"]',
+        },
+        {
+            "id": "p_handoff",
+            "template_id": "planning_pipeline_v1",
+            "name": "Handoff",
+            "slug": "handoff",
+            "stage_order": 3,
+            "expected_artifacts": '["report"]',
+        },
+        {
+            "id": "d_research",
+            "template_id": "design_pipeline_v1",
+            "name": "Research",
+            "slug": "research",
+            "stage_order": 0,
+            "expected_artifacts": '["brief","meeting_notes"]',
+        },
+        {
+            "id": "d_concept",
+            "template_id": "design_pipeline_v1",
+            "name": "Concept Sketch",
+            "slug": "concept-sketch",
+            "stage_order": 1,
+            "expected_artifacts": '["brief","content_draft"]',
+        },
+        {
+            "id": "d_review",
+            "template_id": "design_pipeline_v1",
+            "name": "Design Review",
+            "slug": "review",
+            "stage_order": 2,
+            "expected_artifacts": '["content_draft"]',
+            "transition_mode": "approval_required",
+            "approval_roles": '["manager"]',
+        },
+        {
+            "id": "d_handoff",
+            "template_id": "design_pipeline_v1",
+            "name": "Handoff",
+            "slug": "handoff",
+            "stage_order": 3,
+            "expected_artifacts": '["content_draft","report"]',
+        },
     ],
     "skills": [
         {
             "id": "skill_001",
-            "name": "초기 연락 이메일 작성",
-            "description": "리드에게 보내는 첫 번째 연락 이메일을 작성합니다.",
-            "content": "# 초기 연락 이메일 작성\n\n## 목적\n리드에게 첫 인상을 남기는 전문적인 이메일을 작성합니다.\n\n## 입력\n- 리드 이름\n- 회사명\n- 관심 제품/서비스\n- 연락 경위 (컨퍼런스, 웹사이트 등)\n\n## 출력 형식\n```\n제목: [제목]\n\n본문:\n[이메일 본문]\n```\n\n## 톤앤매너\n- 전문적이면서도 친근한 톤\n- 가치 제안을 명확히\n- CTA 포함",
-            "agent_type_id": "sales",
+            "name": "기획 브리프 작성",
+            "description": "리서치 내용을 바탕으로 기획 브리프를 정리합니다.",
+            "content": "# 기획 브리프 작성\n\n## 목적\n리서치 결과를 구조화하여 이해관계자와 공유할 수 있는 기획 브리프를 작성합니다.\n\n## 입력\n- 프로젝트 목표\n- 사용자/시장 인사이트\n- 제약사항\n- 참고 자료\n\n## 출력 형식\n- 요약\n- 핵심 문제\n- 제안 방향\n- 다음 단계\n\n## 작성 원칙\n- 문장은 짧고 명확하게\n- 의사결정에 필요한 정보만 남기기\n- 액션 아이템은 담당자와 기한을 포함하기",
+            "agent_type_id": "planning",
         },
         {
             "id": "skill_002",
-            "name": "미팅 노트 정리",
-            "description": "미팅 내용을 구조화된 노트로 정리합니다.",
-            "content": "# 미팅 노트 정리\n\n## 목적\n미팅 내용을 체계적으로 정리하여 팀과 공유합니다.\n\n## 구조\n1. 미팅 정보 (일시, 참석자)\n2. 핵심 논의 사항\n3. 의사결정 내용\n4. 액션 아이템 (담당자, 기한)\n5. 다음 미팅 일정\n\n## 작성 규칙\n- 객관적 사실 중심\n- 액션 아이템은 체크리스트로\n- 기한 명시 필수",
-            "agent_type_id": None,
+            "name": "스테이크홀더 미팅 노트 정리",
+            "description": "회의 내용을 기획 관점으로 정리합니다.",
+            "content": "# 스테이크홀더 미팅 노트 정리\n\n## 목적\n회의에서 나온 의견, 결정 사항, 후속 액션을 정리합니다.\n\n## 구조\n1. 회의 정보\n2. 핵심 논의 사항\n3. 결정 사항\n4. 액션 아이템\n5. 후속 일정\n\n## 작성 규칙\n- 발언보다 결정과 합의에 집중\n- 액션은 체크리스트로 명시\n- 다음 단계가 분명해야 함",
+            "agent_type_id": "planning",
         },
         {
             "id": "skill_003",
-            "name": "캠페인 브리프 작성",
-            "description": "마케팅 캠페인 브리프를 작성합니다.",
-            "content": "# 캠페인 브리프 작성\n\n## 필수 항목\n- 캠페인 목표 (SMART 기준)\n- 타겟 오디언스 정의\n- 핵심 메시지\n- 채널 전략\n- 예산 배분\n- 일정 (마일스톤)\n- 성공 지표 (KPI)\n\n## 작성 팁\n- 한 페이지 요약 포함\n- 경쟁사 분석 첨부\n- 과거 캠페인 성과 참조",
-            "agent_type_id": "marketing",
+            "name": "디자인 콘셉트 설명서 작성",
+            "description": "디자인 방향과 화면 구성을 설명합니다.",
+            "content": "# 디자인 콘셉트 설명서 작성\n\n## 목적\n화면 구조, 비주얼 방향, 인터랙션 의도를 간결하게 설명합니다.\n\n## 필수 항목\n- 문제 정의\n- 참고 레퍼런스\n- 레이아웃 방향\n- 시각적 톤앤매너\n- 주요 인터랙션\n\n## 작성 팁\n- 화면 단위로 구분해서 설명\n- 와이어프레임과 시안의 차이를 명확히\n- 개발/기획이 이해할 수 있는 언어 사용",
+            "agent_type_id": "design",
         },
         {
             "id": "skill_004",
-            "name": "티켓 분류 및 우선순위 결정",
-            "description": "지원 티켓을 분류하고 우선순위를 결정합니다.",
-            "content": "# 티켓 분류 가이드\n\n## 심각도 레벨\n- **Critical**: 서비스 전체 중단, 데이터 손실 위험\n- **High**: 주요 기능 장애, 다수 사용자 영향\n- **Medium**: 부분 기능 장애, 우회 방법 존재\n- **Low**: UI 이슈, 개선 요청\n\n## 카테고리\n- billing: 결제/구독 관련\n- auth: 인증/권한 관련\n- performance: 성능 관련\n- feature: 기능 요청\n- bug: 버그 리포트\n\n## 응답 SLA\n- Critical: 1시간 내\n- High: 4시간 내\n- Medium: 24시간 내\n- Low: 72시간 내",
-            "agent_type_id": "support",
+            "name": "디자인 리뷰 피드백 정리",
+            "description": "디자인 리뷰 의견을 구조화하여 정리합니다.",
+            "content": "# 디자인 리뷰 피드백 정리\n\n## 목적\n리뷰 코멘트를 실행 가능한 피드백으로 정리합니다.\n\n## 정리 항목\n- 개선 포인트\n- 우선순위\n- 영향 범위\n- 담당자\n- 반영 기한\n\n## 작성 규칙\n- 주관적 표현보다 관찰 가능한 사실을 먼저 적기\n- 변경 요청과 이유를 분리하기\n- 수정 후 재검토가 필요한 항목을 표시하기",
+            "agent_type_id": "design",
         },
         {
             "id": "skill_005",
-            "name": "제안서 작성",
-            "description": "고객 맞춤 솔루션 제안서를 작성합니다.",
-            "content": "# 솔루션 제안서 작성\n\n## 구조\n1. 요약 (Executive Summary)\n2. 고객 현황 및 과제\n3. 제안 솔루션\n4. 기대 효과 (ROI)\n5. 구현 일정\n6. 가격 구성\n7. 팀 소개\n8. 부록 (기술 스펙)\n\n## 작성 규칙\n- 고객 관점에서 가치 중심 서술\n- 수치와 사례로 뒷받침\n- 경쟁 우위 강조\n- 명확한 다음 단계 제시",
-            "agent_type_id": "sales",
+            "name": "협업 회의 요약 템플릿",
+            "description": "기획과 디자인 공통으로 사용하는 회의 요약 템플릿입니다.",
+            "content": "# 협업 회의 요약 템플릿\n\n## 회의 정보\n- 일시\n- 참석자\n- 목적\n\n## 요약\n- 핵심 논의\n- 합의 사항\n- 보류 사항\n\n## 액션\n- 담당자\n- 기한\n- 후속 확인 포인트",
+            "agent_type_id": None,
         },
     ],
 }
@@ -112,11 +152,20 @@ def seed_if_empty(conn: sqlite3.Connection, now_fn: Callable[[], str], emit_even
             (t["id"], t["agent_type_id"], t["name"], now),
         )
     for s in SEED_DATA["stages"]:
-        transition_mode = s.get("transition_mode", "auto")
-        approval_roles = s.get("approval_roles", "[]")
         conn.execute(
             "INSERT INTO stage_definitions (id, template_id, name, slug, stage_order, expected_artifacts, trigger_conditions, transition_mode, approval_roles, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (s["id"], s["template_id"], s["name"], s["slug"], s["stage_order"], s["expected_artifacts"], "{}", transition_mode, approval_roles, now),
+            (
+                s["id"],
+                s["template_id"],
+                s["name"],
+                s["slug"],
+                s["stage_order"],
+                s["expected_artifacts"],
+                "{}",
+                s.get("transition_mode", "auto"),
+                s.get("approval_roles", "[]"),
+                now,
+            ),
         )
 
     for sk in SEED_DATA.get("skills", []):
@@ -153,62 +202,103 @@ def seed_sample_data(conn: sqlite3.Connection, now: str, emit_event: Callable[..
             (aid, author, body, now, now),
         )
 
-    _ins_wf("wi_sales_001", "sales_pipeline_v1", "sales", "Acme Corp 엔터프라이즈 딜", "s_prop", "active", 1, "김영업")
-    _ins_art("art_s001", "wi_sales_001", "s_lead", "contact_info", "Acme Corp 담당자 정보",
-             json.dumps({"name": "John Smith", "company": "Acme Corp", "email": "john@acme.com", "phone": "+82-10-1234-5678", "source": "컨퍼런스"}, ensure_ascii=False),
-             "application/json", "final")
-    _ins_comment("art_s001", "김영업", "컨퍼런스에서 만난 핵심 의사결정자입니다. CTO 직급.")
-    _ins_art("art_s002", "wi_sales_001", "s_qual", "email", "초기 미팅 요청 이메일",
-             "## 미팅 요청\n\n안녕하세요 John,\n\n지난 컨퍼런스에서 말씀드렸던 솔루션 데모를 진행하고 싶습니다.\n\n다음 주 화요일 오후 2시 가능하실까요?\n\n감사합니다.", "text/markdown", "final")
-    _ins_art("art_s003", "wi_sales_001", "s_qual", "meeting_notes", "1차 미팅 노트",
-             "## 1차 미팅 (2025-05-08)\n\n**참석자**: John Smith (CTO), Sarah Lee (VP Eng)\n\n### 핵심 사항\n- 현재 레거시 시스템 교체 검토 중\n- 예산 약 5억원 확보됨\n- Q3 내 도입 희망\n\n### 액션 아이템\n- [ ] 기술 스펙 문서 전달\n- [ ] 가격 제안서 준비\n- [ ] 2차 기술 미팅 일정 조율", "text/markdown", "final")
-    _ins_comment("art_s003", "박팀장", "예산 규모가 괜찮네요. 프리미엄 패키지로 제안 준비해주세요.")
-    _ins_comment("art_s003", "김영업", "네, 내일까지 제안서 초안 올리겠습니다.")
-    _ins_art("art_s004", "wi_sales_001", "s_prop", "proposal", "Acme Corp 제안서 초안",
-             "## 솔루션 제안서 — Acme Corp\n\n### 1. 제안 범위\n- 엔터프라이즈 플랜 (사용자 500명)\n- 커스텀 통합 개발 (3개월)\n- 전담 기술 지원 (12개월)\n\n### 2. 가격\n| 항목 | 금액 |\n|------|------|\n| 라이선스 (연간) | 3억원 |\n| 통합 개발 | 1.5억원 |\n| 기술 지원 | 5천만원 |\n| **합계** | **5억원** |\n\n### 3. 일정\n- 계약 체결: 6월\n- 개발 착수: 7월\n- 1차 배포: 9월", "text/markdown", "draft")
-    _ins_comment("art_s004", "박팀장", "통합 개발 금액을 좀 더 세분화해서 보여주면 좋겠어요.")
-    _ins_wf("wi_sales_002", "sales_pipeline_v1", "sales", "Beta Inc 스타트업 패키지", "s_lead", "active", 0, "이대리")
-    _ins_art("art_s010", "wi_sales_002", "s_lead", "contact_info", "Beta Inc 연락처",
-             json.dumps({"name": "최민수", "company": "Beta Inc", "email": "ms.choi@betainc.kr", "phone": "+82-10-9876-5432", "source": "웹사이트 문의"}, ensure_ascii=False),
-             "application/json", "final")
-    _ins_wf("wi_sales_003", "sales_pipeline_v1", "sales", "Gamma Ltd 글로벌 계약", "s_nego", "active", 2, "김영업")
-    _ins_art("art_s020", "wi_sales_003", "s_nego", "contract", "계약서 초안 v2",
-             "## 계약서 초안\n\n**계약 당사자**: Hermes Inc ↔ Gamma Ltd\n\n### 주요 조건\n- 계약 기간: 24개월\n- 총 계약 금액: $500,000\n- 지불 조건: 분기별 균등 분할\n- SLA: 99.9% 가용성 보장\n\n### 특이 사항\n- 아시아 태평양 지역 독점 조항 요청 중\n- 법무팀 검토 필요", "text/markdown", "draft")
-    _ins_comment("art_s020", "김영업", "법무팀에 독점 조항 관련 검토 요청했습니다.")
-    _ins_comment("art_s020", "박팀장", "독점 조항은 리스크가 있어요. 지역 제한 범위를 좁히는 방향으로 협의하세요.")
-    _ins_wf("wi_sales_004", "sales_pipeline_v1", "sales", "Delta Corp 연간 계약", "s_close", "completed", 0, "이대리")
-    _ins_wf("wi_mktg_001", "mktg_blog", "marketing", "Q3 제품 런칭 블로그 포스트", "mb_draft", "active", 1, "정마케터")
-    _ins_art("art_m001", "wi_mktg_001", "mb_topic", "brief", "Q3 블로그 주제 기획",
-             "## Q3 블로그 주제\n\n### 주제\nAI 워크플로우 자동화로 팀 생산성 높이기\n\n### 타겟 독자\n- B2B SaaS 의사결정자 (CTO, VP Eng)\n- IT/테크 산업 종사자\n\n### 핵심 메시지\n- 복잡한 워크플로우를 AI로 간소화\n- 실제 고객 사례로 효과 입증", "text/markdown", "final")
-    _ins_comment("art_m001", "정마케터", "CMO 승인 완료. 초안 작성 착수합니다.")
-    _ins_art("art_m002", "wi_mktg_001", "mb_draft", "content_draft", "블로그 초안",
-             "## 혁신을 가속화하는 차세대 플랫폼\n\n### 헤드라인 A\n\"복잡한 워크플로우, 이제 AI가 알아서 처리합니다\"\n\n### 헤드라인 B\n\"팀 생산성 300% 향상 — 실제 고객 사례로 검증\"\n\n### 본문\n- 5분 만에 설정, 즉시 효과\n- 50+ 통합 지원\n- 엔터프라이즈급 보안\n\n### CTA\n\"무료 체험 시작하기\" / \"데모 신청\"", "text/markdown", "draft")
-    _ins_comment("art_m002", "이디자이너", "헤드라인 B가 더 임팩트 있는 것 같아요. 숫자가 눈에 들어옵니다.")
-    _ins_wf("wi_mktg_003", "mktg_blog", "marketing", "Q2 브랜드 인지도 블로그", "mb_publish", "completed", 0, "정마케터")
-    _ins_art("art_m020", "wi_mktg_003", "mb_publish", "report", "Q2 블로그 성과 보고서",
-             "## Q2 블로그 성과 요약\n\n### 주요 지표\n- 조회수: 85,000\n- 전환율: 2.8%\n- 공유: 420건\n\n### 인사이트\n- LinkedIn 공유가 가장 높은 유입 채널\n- 웨비나 참석자의 리드 전환율이 일반 대비 3배", "text/markdown", "final")
-    _ins_comment("art_m020", "CMO", "좋은 결과네요. Q3에는 블로그 발행 빈도를 늘려보겠습니다.")
-    _ins_wf("wi_mktg_002", "mktg_cardnews", "marketing", "5월 제품 업데이트 카드뉴스", "mc_copy", "active", 0, "정마케터")
-    _ins_art("art_m010", "wi_mktg_002", "mc_plan", "brief", "5월 카드뉴스 기획",
-             "## 5월 카드뉴스 기획\n\n### 주제\nHermes 5월 주요 업데이트 안내\n\n### 내용 요소\n1. AI 워크플로우 자동화 기능 출시\n2. 대시보드 플러그인 시스템 오픈\n3. 고객 사례: Beta Inc의 업무 효율 200% 향상기", "text/markdown", "final")
-    _ins_art("art_m011", "wi_mktg_002", "mc_copy", "content_draft", "5월 카드뉴스 카피",
-             "## Hermes 5월 업데이트\n\n**슬라이드 1**: AI 워크플로우 자동화 출시!\n**슬라이드 2**: 대시보드 플러그인으로 확장하세요\n**슬라이드 3**: Beta Inc 성공 사례\n**슬라이드 4**: 지금 무료 체험 시작하기", "text/markdown", "draft")
-    _ins_wf("wi_sup_001", "support_pipeline_v1", "support", "[긴급] 결제 시스템 오류 #4521", "t_invest", "active", 2, "최엔지니어")
-    _ins_art("art_t001", "wi_sup_001", "t_created", "ticket", "결제 오류 티켓",
-             json.dumps({"customer": "MegaCorp", "issue": "결제 처리 시 500 에러 발생", "severity": "critical", "category": "billing", "reported_at": "2025-05-10T09:30:00Z"}, ensure_ascii=False),
-             "application/json", "final")
-    _ins_art("art_t002", "wi_sup_001", "t_triage", "log", "초기 분류 로그",
-             "2025-05-10 09:35 - 티켓 접수. 결제 시스템 500 에러.\n2025-05-10 09:40 - 심각도: Critical 분류. 다수 고객 영향 확인.\n2025-05-10 09:45 - 결제 게이트웨이 로그 확인 시작.\n2025-05-10 10:00 - PG사 측 API 응답 지연 확인 (평균 30초 → 타임아웃)", "text/plain", "final")
-    _ins_art("art_t003", "wi_sup_001", "t_invest", "log", "조사 로그",
-             "2025-05-10 10:30 - PG사 API 엔드포인트 상태 확인\n2025-05-10 11:00 - PG사 측 서버 증설 작업 진행 중 확인\n2025-05-10 11:30 - 임시 조치: 타임아웃 값 60초로 상향\n2025-05-10 12:00 - 재시도 로직 추가 배포 검토 중", "text/plain", "draft")
-    _ins_comment("art_t003", "최엔지니어", "PG사 측 이슈입니다. 임시로 타임아웃 늘렸고, 재시도 로직 추가 배포 예정입니다.")
-    _ins_comment("art_t003", "박팀장", "고객사에 현재 상황 안내 이메일 보내주세요.")
-    _ins_wf("wi_sup_002", "support_pipeline_v1", "support", "SSO 로그인 실패 #4523", "t_triage", "active", 1, "한주니어")
-    _ins_art("art_t010", "wi_sup_002", "t_created", "ticket", "SSO 로그인 티켓",
-             json.dumps({"customer": "TechStart", "issue": "Google SSO 로그인 시 리다이렉트 무한루프", "severity": "high", "category": "auth", "reported_at": "2025-05-10T14:00:00Z"}, ensure_ascii=False),
-             "application/json", "final")
-    _ins_wf("wi_sup_003", "support_pipeline_v1", "support", "데이터 내보내기 오류 #4510", "t_follow", "completed", 0, "최엔지니어")
-    _ins_art("art_t020", "wi_sup_003", "t_resolve", "resolution_note", "데이터 내보내기 수정 완료",
-             "## 근본 원인\nCSV 내보내기 시 한글 인코딩(UTF-8 BOM) 누락으로 Excel에서 깨짐 발생\n\n## 적용 수정\n- CSV 생성 시 UTF-8 BOM 헤더 추가\n- 인코딩 옵션 선택 UI 추가 (UTF-8 / EUC-KR)\n\n## 검증\n- QA 테스트 통과\n- 고객 확인 완료", "text/markdown", "final")
-    _ins_comment("art_t020", "최엔지니어", "v2.3.1 핫픽스로 배포 완료했습니다.")
-    _ins_wf("wi_sup_004", "support_pipeline_v1", "support", "API 속도 저하 문의 #4525", "t_created", "active", 0, "")
+    _ins_wf("wi_plan_001", "planning_pipeline_v1", "planning", "Q4 제품 로드맵 정리", "p_review", "active", 1, "김기획")
+    _ins_art(
+        "art_p001",
+        "wi_plan_001",
+        "p_discovery",
+        "brief",
+        "리서치 인사이트 초안",
+        "## 리서치 요약\n\n- 사용자 인터뷰 8건 완료\n- 주요 요구: 빠른 검토 흐름과 명확한 우선순위\n- 개선 포인트: 승인 단계의 맥락 부족\n\n## 다음 단계\n- 이해관계자별 우선순위 정리\n- 브리프 초안 작성",
+        "text/markdown",
+        "final",
+    )
+    _ins_comment("art_p001", "김기획", "핵심 문제는 승인 기준이 모호하다는 점입니다. 리뷰 단계에서 정리하겠습니다.")
+    _ins_art(
+        "art_p002",
+        "wi_plan_001",
+        "p_brief",
+        "brief",
+        "Q4 기획 브리프",
+        "## Q4 기획 브리프\n\n### 목표\n- 승인 대기 시간을 줄이고 협업 맥락을 명확히 한다.\n\n### 범위\n- 기획 브리프 템플릿 정리\n- 의사결정 기준 명시\n- 디자인 팀 인수인계 포인트 정리",
+        "text/markdown",
+        "draft",
+    )
+    _ins_art(
+        "art_p003",
+        "wi_plan_001",
+        "p_review",
+        "meeting_notes",
+        "스테이크홀더 리뷰 노트",
+        "## 리뷰 회의 (2026-05-18)\n\n**참석자**: 김기획, 박디자이너, 제품팀 리더\n\n### 결정 사항\n- 브리프는 3가지 핵심 질문으로 축약\n- 디자인 핸드오프에 필요한 체크리스트 추가\n\n### 액션 아이템\n- [ ] 브리프 초안 재정리\n- [ ] 디자인 팀 의견 반영\n- [ ] 다음 회의 전 공유",
+        "text/markdown",
+        "final",
+    )
+    _ins_comment("art_p003", "제품팀 리더", "기획안이 훨씬 명확해졌습니다. 승인 기준을 한 페이지로 정리해주세요.")
+    _ins_wf("wi_plan_002", "planning_pipeline_v1", "planning", "신규 기능 우선순위 워크숍", "p_handoff", "completed", 0, "이기획")
+    _ins_art(
+        "art_p010",
+        "wi_plan_002",
+        "p_handoff",
+        "report",
+        "우선순위 정리 결과",
+        "## 우선순위 정리 결과\n\n- 상위 과제 3건 확정\n- 분기별 로드맵 초안 공유 완료\n- 디자인 리소스 요청 범위 합의",
+        "text/markdown",
+        "final",
+    )
+
+    _ins_wf("wi_des_001", "design_pipeline_v1", "design", "모바일 앱 홈 개편", "d_review", "active", 2, "박디자이너")
+    _ins_art(
+        "art_d001",
+        "wi_des_001",
+        "d_research",
+        "brief",
+        "UX 리서치 요약",
+        "## 리서치 요약\n\n- 홈 화면 진입 후 주요 CTA 인지가 낮음\n- 정보 밀도가 높아 첫 화면 피로도가 큼\n- 우선 개선 포인트는 섹션 구조와 시각적 위계",
+        "text/markdown",
+        "final",
+    )
+    _ins_comment("art_d001", "박디자이너", "기획 단계에서 정리된 우선순위와 맞춰서 구조를 단순화하겠습니다.")
+    _ins_art(
+        "art_d002",
+        "wi_des_001",
+        "d_concept",
+        "content_draft",
+        "홈 화면 와이어프레임 초안",
+        "## 화면 구조\n\n- 상단: 핵심 CTA\n- 중단: 최근 작업 카드\n- 하단: 추천 액션\n\n### 의도\n첫 진입 시 사용자가 다음 행동을 쉽게 선택하도록 화면을 단순화한다.",
+        "text/markdown",
+        "draft",
+    )
+    _ins_comment("art_d002", "김기획", "중단 카드의 우선순위를 조금 더 낮추면 좋겠습니다.")
+    _ins_art(
+        "art_d003",
+        "wi_des_001",
+        "d_review",
+        "content_draft",
+        "디자인 리뷰 반영본",
+        "## 반영 포인트\n\n- CTA 크기 확대\n- 섹션 간 간격 조정\n- 상태 메시지 추가\n\n## 남은 확인 사항\n- 모바일 대응\n- 빈 상태 처리",
+        "text/markdown",
+        "draft",
+    )
+    _ins_wf("wi_des_002", "design_pipeline_v1", "design", "온보딩 랜딩 페이지 시안", "d_handoff", "completed", 0, "최디자이너")
+    _ins_art(
+        "art_d010",
+        "wi_des_002",
+        "d_concept",
+        "content_draft",
+        "랜딩 페이지 콘셉트",
+        "## 랜딩 페이지 콘셉트\n\n- 첫 화면에서 가치 제안이 바로 보이도록 구성\n- 핵심 혜택과 사회적 증거를 상단에 배치\n- 전환 버튼은 한 가지 행동으로 통일",
+        "text/markdown",
+        "draft",
+    )
+    _ins_art(
+        "art_d011",
+        "wi_des_002",
+        "d_handoff",
+        "report",
+        "디자인 핸드오프 요약",
+        "## 핸드오프 요약\n\n- 최종 컴포넌트 규칙 공유\n- 스타일 가이드 반영 완료\n- 개발 전달용 주석 정리",
+        "text/markdown",
+        "final",
+    )
+    _ins_comment("art_d011", "최디자이너", "개발팀 전달용 메모까지 포함했습니다. 바로 구현 가능합니다.")

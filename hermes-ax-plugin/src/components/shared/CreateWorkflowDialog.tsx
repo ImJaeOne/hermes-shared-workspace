@@ -53,12 +53,12 @@ export function CreateWorkflowDialog({ onClose }: Props) {
         </div>
         <div className="ax-dialog-body">
           <label className="ax-label">
-            워크플로우 이름
+            템플릿 이름
             <input
               className="ax-input"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="예: 블로그, 카드뉴스, 뉴스레터"
+              placeholder="예: Q4 기획안, 홈 화면 개편, 출시 캠페인"
               autoFocus
             />
           </label>

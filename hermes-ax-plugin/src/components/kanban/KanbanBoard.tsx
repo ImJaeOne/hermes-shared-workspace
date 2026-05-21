@@ -20,7 +20,7 @@ export function KanbanBoard() {
     <div className="ax-kanban">
       <div className="ax-kanban-toolbar">
         <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={() => setShowCreateInstance(true)}>
-          + 새 티켓
+          + 새 워크플로우
         </button>
       </div>
       <div className="ax-kanban-columns">

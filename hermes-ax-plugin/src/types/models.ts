@@ -1,4 +1,4 @@
-export type AgentTypeId = "sales" | "marketing" | "support";
+export type AgentTypeId = "planning" | "design";
 
 export type WorkflowStatus =
   | "active"
