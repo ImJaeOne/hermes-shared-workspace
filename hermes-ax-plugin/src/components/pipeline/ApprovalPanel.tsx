@@ -9,7 +9,7 @@ interface Props {
 }
 
 export function ApprovalPanel({ approval, onDecided }: Props) {
-  const { authenticated, authLoading } = useApp();
+  const { authenticated, authLoading, currentUserLabel, authUser } = useApp();
   const [note, setNote] = useState("");
   const [deciding, setDeciding] = useState(false);
   const [error, setError] = useState("");
@@ -19,7 +19,11 @@ export function ApprovalPanel({ approval, onDecided }: Props) {
     setDeciding(true);
     setError("");
     try {
-      await decideApproval(approval.id, { status, note: note.trim() || undefined });
+      await decideApproval(approval.id, {
+        status,
+        decided_by: currentUserLabel || authUser?.username || "user",
+        note: note.trim() || undefined,
+      });
       onDecided();
     } catch (e) {
       setError(getApiErrorMessage(e, "승인 상태를 변경하지 못했습니다."));

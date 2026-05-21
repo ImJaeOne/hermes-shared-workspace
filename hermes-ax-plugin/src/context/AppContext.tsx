@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import type { AgentType, AgentTypeId, ApprovalRequest, Skill } from "../types/models";
 import type { AuthUser, BoardResponse, LoginRequest, StatsResponse } from "../types/api";
 import {
+  clearSessionToken,
   getAgents,
   getApprovals,
   getAuthSession,
@@ -10,6 +11,7 @@ import {
   getStats,
   login as loginRequest,
   logout as logoutRequest,
+  setSessionToken,
   usePolling,
 } from "../api/client";
 
@@ -79,10 +81,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setAuthLoading(true);
     try {
       const session = await getAuthSession();
-      setAuthUser(session.authenticated ? session.user : null);
-      setAuthExpiresAt(session.authenticated ? session.expires_at : null);
+      if (session.authenticated) {
+        setAuthUser(session.user);
+        setAuthExpiresAt(session.expires_at);
+      } else {
+        clearSessionToken();
+        setAuthUser(null);
+        setAuthExpiresAt(null);
+      }
     } catch (e) {
       console.error("Failed to load auth session:", e);
+      clearSessionToken();
       setAuthUser(null);
       setAuthExpiresAt(null);
     } finally {
@@ -94,6 +103,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setAuthLoading(true);
     try {
       const response = await loginRequest(payload);
+      setSessionToken(response.token);
       setAuthUser(response.user);
       setAuthExpiresAt(response.expires_at);
     } finally {
@@ -105,6 +115,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setAuthLoading(true);
     try {
       await logoutRequest();
+      clearSessionToken();
       setAuthUser(null);
       setAuthExpiresAt(null);
     } finally {
