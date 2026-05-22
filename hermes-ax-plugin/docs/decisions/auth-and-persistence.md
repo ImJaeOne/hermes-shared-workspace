@@ -1,6 +1,6 @@
 # AX 인증 및 런타임 지식 저장 방식 결정
 
-상태: Accepted working decision  
+상태: Accepted working decision
 작성일: 2026-05-22
 
 ## 배경
