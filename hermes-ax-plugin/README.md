@@ -169,6 +169,66 @@ AX Dashboard는 별도 로그인 UI/세션을 운영하지 않고, 상위 Hermes
 
 상세 상태 모델과 DB 활용안은 `docs/decisions/planning-research-mvp-state-model.md`를 기준으로 합니다.
 
+### 8. Slack 채널 온보딩 Webhook
+
+Issue #21 기준 Slack 회사 채널 온보딩은 AX 플러그인 API의 아래 엔드포인트로 수신합니다.
+
+```text
+POST /api/plugins/hermes-ax/slack/events
+```
+
+로컬 Docker 또는 Railway 배포 환경에는 최소 아래 환경변수를 설정합니다.
+
+| 환경변수 | 용도 |
+|----------|------|
+| `HERMES_AX_SLACK_SIGNING_SECRET` 또는 `SLACK_SIGNING_SECRET` | Slack Events API 서명 검증 |
+| `HERMES_AX_SLACK_BOT_TOKEN` 또는 `SLACK_BOT_TOKEN` | `chat.postMessage`, `conversations.info` 호출 |
+| `HERMES_AX_SLACK_BOT_USER_ID` 또는 `SLACK_BOT_USER_ID` | `member_joined_channel` 이벤트에서 기획팀 임팀장 봇 참여 여부 확인 |
+| `HERMES_AX_SLACK_DRY_RUN=true` | 로컬/API 테스트에서 Slack으로 실제 메시지를 보내지 않고 전송 성공으로 기록 |
+| `HERMES_AX_SLACK_ALLOW_UNSIGNED_EVENTS=true` | 로컬 fixture 테스트용. 운영에서는 사용하지 않음 |
+
+Slack 이벤트가 들어오면 `#덕우전자` 같은 채널명에서 회사명 `덕우전자`를 추출하고, `planning_research_mvp_v1` 템플릿의 `[덕우전자] 기획 자료조사` 워크플로우와 매핑합니다. 매핑과 재시도 처리 상태는 SQLite의 `slack_channel_project_mappings`, `slack_event_receipts` 테이블에 저장됩니다.
+
+로컬 검증은 실제 Slack 호출 없이 아래 API 테스트로 확인할 수 있습니다.
+
+```bash
+cd /Users/LIM/workspace/innodive-automation/hermes-ax-plugin
+HERMES_AX_SLACK_DRY_RUN=true \
+HERMES_AX_SLACK_SIGNING_SECRET=test-slack-signing-secret \
+HERMES_AX_SLACK_BOT_USER_ID=UBOTLEAD \
+~/.hermes/hermes-agent/venv/bin/python3 test_api.py
+```
+
+Docker 대시보드에서 수동 확인할 때는 포트 충돌을 피하기 위해 호스트 Hermes Dashboard가 `9119`를 쓰고 있는지 먼저 확인하고, 필요하면 Docker 호스트 포트를 `9120`처럼 분리합니다.
+
+```bash
+cd /Users/LIM/workspace/innodive-automation/hermes-ax-plugin
+
+docker build -t hermes-ax-plugin:local .
+docker rm -f hermes-ax-local 2>/dev/null || true
+
+docker run --rm \
+  --name hermes-ax-local \
+  -p 9120:9119 \
+  -e PORT=9119 \
+  -e RUN_MODE=dashboard \
+  -e HERMES_HOME=/data/.hermes \
+  -e HERMES_AX_SESSION_COOKIE_SECURE=false \
+  -e HERMES_AX_SLACK_DRY_RUN=true \
+  -e HERMES_AX_SLACK_SIGNING_SECRET=test-slack-signing-secret \
+  -e HERMES_AX_SLACK_BOT_USER_ID=UBOTLEAD \
+  -v hermes_ax_data:/data \
+  hermes-ax-plugin:local
+```
+
+접속 URL:
+
+```text
+http://127.0.0.1:9120/ax
+```
+
+Railway에서는 서비스 Root Directory를 `hermes-ax-plugin`으로 두고, Railway Volume을 `/data`에 마운트한 뒤 `HERMES_HOME=/data/.hermes`, `RUN_MODE=both` 또는 `dashboard`, Slack 관련 secret 환경변수를 설정합니다. 운영에서는 `HERMES_AX_SLACK_DRY_RUN`, `HERMES_AX_SLACK_ALLOW_UNSIGNED_EVENTS`를 끕니다.
+
 ## Development
 
 ### 프론트엔드 빌드

@@ -21,6 +21,7 @@ try:
     from .stage_settings_api import router as stage_settings_router
     from .workflows_api import router as workflows_router
     from .skills_api import router as skills_router
+    from .slack_onboarding_api import router as slack_onboarding_router
     from .seed import seed_if_empty
 except ImportError:
     import os
@@ -46,6 +47,7 @@ except ImportError:
     from stage_settings_api import router as stage_settings_router
     from workflows_api import router as workflows_router
     from skills_api import router as skills_router
+    from slack_onboarding_api import router as slack_onboarding_router
     from seed import seed_if_empty
 
 router = APIRouter()
@@ -57,6 +59,7 @@ router.include_router(events_router)
 router.include_router(stats_router)
 router.include_router(stage_settings_router)
 router.include_router(workflows_router)
+router.include_router(slack_onboarding_router)
 
 
 def init_db():

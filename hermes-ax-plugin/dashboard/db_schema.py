@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS agent_types (
@@ -159,6 +160,47 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     created_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS slack_channel_project_mappings (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL DEFAULT '',
+    enterprise_id TEXT NOT NULL DEFAULT '',
+    channel_id TEXT NOT NULL,
+    channel_name TEXT NOT NULL DEFAULT '',
+    normalized_channel_name TEXT NOT NULL DEFAULT '',
+    company_name TEXT NOT NULL,
+    project_key TEXT NOT NULL,
+    workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'active',
+    onboarding_message TEXT NOT NULL DEFAULT '',
+    onboarding_message_ts TEXT NOT NULL DEFAULT '',
+    onboarding_message_sent_at TEXT,
+    first_event_id TEXT NOT NULL DEFAULT '',
+    last_event_id TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(team_id, channel_id),
+    UNIQUE(team_id, project_key),
+    UNIQUE(workflow_id)
+);
+
+CREATE TABLE IF NOT EXISTS slack_event_receipts (
+    event_id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL DEFAULT '',
+    channel_id TEXT NOT NULL DEFAULT '',
+    retry_num TEXT NOT NULL DEFAULT '',
+    retry_reason TEXT NOT NULL DEFAULT '',
+    body_hash TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'processing',
+    mapping_id TEXT REFERENCES slack_channel_project_mappings(id) ON DELETE SET NULL,
+    workflow_id TEXT REFERENCES workflow_instances(id) ON DELETE SET NULL,
+    response_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL,
+    processed_at TEXT
+);
 """
 
 
@@ -182,6 +224,63 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
     return row[0] > 0
+
+
+def _normalize_slack_channel_name(channel_name: str) -> str:
+    return "-".join(channel_name.strip().lstrip("#").lower().replace("_", "-").split())
+
+
+def _backfill_slack_channel_project_mappings(conn: sqlite3.Connection):
+    """Backfill mappings from legacy workflow metadata_json Slack fields."""
+    if not _table_exists(conn, "slack_channel_project_mappings") or not _table_exists(conn, "workflow_instances"):
+        return
+
+    rows = conn.execute(
+        """SELECT id, title, metadata_json, created_at, updated_at
+           FROM workflow_instances
+           WHERE template_id='planning_research_mvp_v1'"""
+    ).fetchall()
+    for row in rows:
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except Exception:
+            continue
+        slack = metadata.get("slack") or {}
+        channel_id = (slack.get("channel_id") or "").strip()
+        if not channel_id:
+            continue
+        company_name = (metadata.get("company_name") or row["title"].strip("[]").split("]")[0]).strip()
+        if not company_name:
+            continue
+        channel_name = (slack.get("channel_name") or company_name).strip().lstrip("#")
+        team_id = (slack.get("team_id") or metadata.get("team_id") or "").strip()
+        enterprise_id = (slack.get("enterprise_id") or metadata.get("enterprise_id") or "").strip()
+        project_key = (metadata.get("project_key") or f"planning-research:{company_name}").strip()
+        now = row["updated_at"] or row["created_at"]
+        conn.execute(
+            """INSERT OR IGNORE INTO slack_channel_project_mappings
+               (id, team_id, enterprise_id, channel_id, channel_name, normalized_channel_name,
+                company_name, project_key, workflow_id, status, onboarding_message, first_event_id,
+                last_event_id, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                f"scpm_{row['id']}",
+                team_id,
+                enterprise_id,
+                channel_id,
+                channel_name,
+                _normalize_slack_channel_name(channel_name),
+                company_name,
+                project_key,
+                row["id"],
+                "active",
+                "",
+                "",
+                "",
+                row["created_at"],
+                now,
+            ),
+        )
 
 
 def _run_migrations(conn: sqlite3.Connection):
@@ -336,3 +435,63 @@ def _run_migrations(conn: sqlite3.Connection):
             )
 
         _set_schema_version(conn, 5)
+        current = 5
+
+    if current < 6:
+        conn.execute("""CREATE TABLE IF NOT EXISTS slack_channel_project_mappings (
+            id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL DEFAULT '',
+            enterprise_id TEXT NOT NULL DEFAULT '',
+            channel_id TEXT NOT NULL,
+            channel_name TEXT NOT NULL DEFAULT '',
+            normalized_channel_name TEXT NOT NULL DEFAULT '',
+            company_name TEXT NOT NULL,
+            project_key TEXT NOT NULL,
+            workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'active',
+            onboarding_message TEXT NOT NULL DEFAULT '',
+            onboarding_message_ts TEXT NOT NULL DEFAULT '',
+            onboarding_message_sent_at TEXT,
+            first_event_id TEXT NOT NULL DEFAULT '',
+            last_event_id TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(team_id, channel_id),
+            UNIQUE(team_id, project_key),
+            UNIQUE(workflow_id)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS slack_event_receipts (
+            event_id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT '',
+            channel_id TEXT NOT NULL DEFAULT '',
+            retry_num TEXT NOT NULL DEFAULT '',
+            retry_reason TEXT NOT NULL DEFAULT '',
+            body_hash TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'processing',
+            mapping_id TEXT REFERENCES slack_channel_project_mappings(id) ON DELETE SET NULL,
+            workflow_id TEXT REFERENCES workflow_instances(id) ON DELETE SET NULL,
+            response_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT NOT NULL DEFAULT '',
+            received_at TEXT NOT NULL,
+            processed_at TEXT
+        )""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_slack_mapping_channel "
+            "ON slack_channel_project_mappings(team_id, channel_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_slack_mapping_project_key "
+            "ON slack_channel_project_mappings(team_id, project_key)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_slack_event_receipts_channel "
+            "ON slack_event_receipts(team_id, channel_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_slack_event_receipts_status "
+            "ON slack_event_receipts(status, received_at)"
+        )
+        _backfill_slack_channel_project_mappings(conn)
+        _set_schema_version(conn, 6)

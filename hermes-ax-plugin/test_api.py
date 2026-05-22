@@ -1,9 +1,13 @@
 """Quick integration test for plugin_api.py — runs without a live server."""
+import hashlib
+import hmac
 import importlib
+import json
 import os
 import sqlite3
 import sys
 import tempfile
+import time
 
 # Ensure we use the dashboard package directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "dashboard"))
@@ -14,6 +18,9 @@ os.environ["HOME"] = _tmp
 os.environ["HERMES_AX_BOOTSTRAP_ADMIN_USERNAME"] = "admin"
 os.environ["HERMES_AX_BOOTSTRAP_ADMIN_PASSWORD"] = "testpass123"
 os.environ["HERMES_AX_BOOTSTRAP_ADMIN_DISPLAY_NAME"] = "테스트 관리자"
+os.environ["HERMES_AX_SLACK_SIGNING_SECRET"] = "test-slack-signing-secret"
+os.environ["HERMES_AX_SLACK_BOT_USER_ID"] = "UBOTLEAD"
+os.environ["HERMES_AX_SLACK_DRY_RUN"] = "true"
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -41,6 +48,51 @@ def check(label, condition, detail=""):
     else:
         failed += 1
         print(f"  FAIL  {label} — {detail}")
+
+
+def slack_headers(payload: dict, signing_key: str = "test-slack-signing-secret") -> tuple[bytes, dict[str, str]]:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ts = str(int(time.time()))
+    base = b"v0:" + ts.encode("ascii") + b":" + body
+    signature = "v0=" + hmac.new(signing_key.encode("utf-8"), base, hashlib.sha256).hexdigest()
+    return body, {
+        "Content-Type": "application/json",
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": signature,
+    }
+
+
+def slack_event_payload(event_id: str = "EvONBOARD1", channel_id: str = "CLOCALTEST", channel_name: str = "테스트전자") -> dict:
+    return {
+        "type": "event_callback",
+        "team_id": "TLOCAL",
+        "api_app_id": "AAXLOCAL",
+        "event_id": event_id,
+        "event_time": int(time.time()),
+        "event": {
+            "type": "channel_joined",
+            "channel": {
+                "id": channel_id,
+                "name": channel_name,
+            },
+        },
+    }
+
+
+def slack_member_joined_payload(event_id: str, user_id: str, channel_id: str, channel_name: str) -> dict:
+    return {
+        "type": "event_callback",
+        "team_id": "TLOCAL",
+        "api_app_id": "AAXLOCAL",
+        "event_id": event_id,
+        "event_time": int(time.time()),
+        "event": {
+            "type": "member_joined_channel",
+            "user": user_id,
+            "channel": channel_id,
+            "channel_name": channel_name,
+        },
+    }
 
 
 def check_parent_session():
@@ -77,6 +129,107 @@ planning = client.get("/agents/planning")
 check("GET /agents/planning status", planning.status_code == 200)
 planning_detail = planning.json()
 check("planning has 6 stages", len(planning_detail.get("stages", [])) == 6, f"got {len(planning_detail.get('stages', []))}")
+
+print("\n=== Slack Channel Onboarding ===")
+challenge_payload = {"type": "url_verification", "challenge": "challenge-token"}
+body, headers = slack_headers(challenge_payload)
+r = anon.post("/slack/events", content=body, headers=headers)
+check("Slack url_verification status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+check("Slack url_verification challenge", r.json().get("challenge") == "challenge-token", str(r.text))
+
+bad_body, bad_headers = slack_headers(slack_event_payload(event_id="EvBAD"), signing_key="wrong-value")
+r = anon.post("/slack/events", content=bad_body, headers=bad_headers)
+check("Slack invalid signature rejected", r.status_code == 401, f"got {r.status_code}: {r.text}")
+
+saved_bot_user_id = os.environ.pop("HERMES_AX_SLACK_BOT_USER_ID")
+member_payload = slack_member_joined_payload("EvMEMBERNOID", "UORDINARY", "CMEMBERNOID", "일반참여")
+member_body, member_headers = slack_headers(member_payload)
+r = anon.post("/slack/events", content=member_body, headers=member_headers)
+check("Slack member_joined without bot id ignored", r.status_code == 200 and r.json().get("reason") == "bot_user_id_required", f"got {r.status_code}: {r.text}")
+with plugin_api.get_db() as conn:
+    member_count = conn.execute("SELECT count(*) FROM workflow_instances WHERE title=?", ("[일반참여] 기획 자료조사",)).fetchone()[0]
+    check("Slack member_joined without bot id creates no workflow", member_count == 0, f"got {member_count}")
+os.environ["HERMES_AX_SLACK_BOT_USER_ID"] = saved_bot_user_id
+
+payload = slack_event_payload()
+body, headers = slack_headers(payload)
+r = anon.post("/slack/events", content=body, headers=headers)
+check("Slack onboarding event status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+slack_result = r.json()
+expected_message = "테스트전자에 대한 기획 작업을 시작하겠습니다. 기획하기 앞서 테스트전자에 대한 자료가 있으시면 첨부해주세요."
+check("Slack onboarding ok", slack_result.get("ok") is True, str(slack_result))
+check("Slack company name extracted", slack_result.get("company_name") == "테스트전자", str(slack_result))
+check("Slack onboarding message generated", slack_result.get("onboarding_message") == expected_message, str(slack_result))
+check("Slack dry-run message treated as sent", slack_result.get("message_sent") is True, str(slack_result))
+slack_wf_id = slack_result.get("workflow_id")
+check("Slack workflow id returned", isinstance(slack_wf_id, str) and slack_wf_id.startswith("wi_"), str(slack_result))
+
+with plugin_api.get_db() as conn:
+    mapping = conn.execute("SELECT * FROM slack_channel_project_mappings WHERE team_id=? AND channel_id=?", ("TLOCAL", "CLOCALTEST")).fetchone()
+    check("Slack channel mapping row exists", mapping is not None)
+    if mapping:
+        check("Slack mapping stores company", mapping["company_name"] == "테스트전자", dict(mapping))
+        check("Slack mapping stores workflow", mapping["workflow_id"] == slack_wf_id, dict(mapping))
+        check("Slack mapping marks message sent", bool(mapping["onboarding_message_sent_at"]), dict(mapping))
+    wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (slack_wf_id,)).fetchone()
+    check("Slack workflow exists", wf is not None)
+    if wf:
+        metadata = json.loads(wf["metadata_json"])
+        check("Slack workflow title", wf["title"] == "[테스트전자] 기획 자료조사", dict(wf))
+        check("Slack workflow initial stage", wf["current_stage_id"] == "p_material_requesting", dict(wf))
+        check("Slack workflow assignee", wf["assignee"] == "기획팀 임팀장", dict(wf))
+        check("Slack workflow metadata project key", metadata.get("project_key") == "planning-research:테스트전자", metadata)
+        check("Slack workflow metadata channel", metadata.get("slack", {}).get("channel_id") == "CLOCALTEST", metadata)
+    receipt = conn.execute("SELECT * FROM slack_event_receipts WHERE event_id=?", ("EvONBOARD1",)).fetchone()
+    check("Slack event receipt recorded", receipt is not None)
+    if receipt:
+        check("Slack event receipt succeeded", receipt["status"] == "succeeded", dict(receipt))
+    activity = conn.execute("SELECT * FROM activity_logs WHERE workflow_id=? AND action=?", (slack_wf_id, "slack.channel_onboarded")).fetchone()
+    check("Slack onboarding activity exists", activity is not None)
+
+r = anon.post("/slack/events", content=body, headers=headers)
+check("Slack duplicate event status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+duplicate_result = r.json()
+check("Slack duplicate reuses workflow", duplicate_result.get("workflow_id") == slack_wf_id, str(duplicate_result))
+check("Slack duplicate marked idempotent", duplicate_result.get("duplicate") is True, str(duplicate_result))
+with plugin_api.get_db() as conn:
+    duplicate_count = conn.execute("SELECT count(*) FROM workflow_instances WHERE title=?", ("[테스트전자] 기획 자료조사",)).fetchone()[0]
+    check("Slack duplicate did not create workflow", duplicate_count == 1, f"got {duplicate_count}")
+
+payload2 = slack_event_payload(event_id="EvONBOARD2")
+body2, headers2 = slack_headers(payload2)
+r = anon.post("/slack/events", content=body2, headers=headers2)
+check("Slack same channel new event status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+reuse_result = r.json()
+check("Slack same channel reuses workflow", reuse_result.get("workflow_id") == slack_wf_id, str(reuse_result))
+check("Slack same channel does not resend message", reuse_result.get("message_sent") is False and reuse_result.get("message_skipped_reason") == "already_sent", str(reuse_result))
+
+saved_dry_run = os.environ.get("HERMES_AX_SLACK_DRY_RUN")
+saved_ax_bot_token = os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+saved_slack_bot_token = os.environ.pop("SLACK_BOT_TOKEN", None)
+os.environ["HERMES_AX_SLACK_DRY_RUN"] = "false"
+fail_payload = slack_event_payload(event_id="EvNOSEND", channel_id="CNOSEND", channel_name="토큰없음")
+fail_body, fail_headers = slack_headers(fail_payload)
+r = anon.post("/slack/events", content=fail_body, headers=fail_headers)
+check("Slack missing token event status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+fail_result = r.json()
+check("Slack missing token marks response failed", fail_result.get("ok") is False and fail_result.get("message_skipped_reason") == "missing_bot_token", str(fail_result))
+with plugin_api.get_db() as conn:
+    failed_receipt = conn.execute("SELECT * FROM slack_event_receipts WHERE event_id=?", ("EvNOSEND",)).fetchone()
+    check("Slack missing token receipt failed", failed_receipt is not None and failed_receipt["status"] == "failed", dict(failed_receipt) if failed_receipt else "")
+os.environ["HERMES_AX_SLACK_DRY_RUN"] = "true"
+r = anon.post("/slack/events", content=fail_body, headers=fail_headers)
+retry_result = r.json()
+check("Slack failed receipt can be retried", r.status_code == 200 and retry_result.get("message_sent") is True, f"got {r.status_code}: {r.text}")
+with plugin_api.get_db() as conn:
+    retried_receipt = conn.execute("SELECT * FROM slack_event_receipts WHERE event_id=?", ("EvNOSEND",)).fetchone()
+    check("Slack retried receipt succeeds", retried_receipt is not None and retried_receipt["status"] == "succeeded", dict(retried_receipt) if retried_receipt else "")
+if saved_dry_run is not None:
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = saved_dry_run
+if saved_ax_bot_token is not None:
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_ax_bot_token
+if saved_slack_bot_token is not None:
+    os.environ["SLACK_BOT_TOKEN"] = saved_slack_bot_token
 
 design = client.get("/agents/design")
 check("GET /agents/design status", design.status_code == 200)
@@ -165,10 +318,15 @@ migration_conn.execute("INSERT INTO artifacts (id, workflow_id, stage_id, artifa
 migration_conn.execute("PRAGMA user_version = 4")
 db_schema._run_migrations(migration_conn)
 migration_row = migration_conn.execute("SELECT * FROM artifacts WHERE id='art_old'").fetchone()
-check("schema v5 migration sets user_version", migration_conn.execute("PRAGMA user_version").fetchone()[0] >= 5)
+check("schema v6 migration sets user_version", migration_conn.execute("PRAGMA user_version").fetchone()[0] >= 6)
 check("schema v5 backfills storage backend", migration_row["storage_backend"] == "local", dict(migration_row))
 check("schema v5 backfills storage key", migration_row["storage_key"] == "wi_old/stg_old/art_old.md", dict(migration_row))
 check("schema v5 backfills version/latest", migration_row["version"] == 1 and migration_row["is_latest"] == 1, dict(migration_row))
+slack_tables = {
+    r[0]
+    for r in migration_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'slack_%'").fetchall()
+}
+check("schema v6 creates Slack mapping tables", {"slack_channel_project_mappings", "slack_event_receipts"}.issubset(slack_tables), slack_tables)
 migration_conn.close()
 
 print("\n=== Artifacts ===")
