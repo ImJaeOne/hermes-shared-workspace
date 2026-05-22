@@ -148,7 +148,8 @@ AX Dashboard는 별도 로그인 UI/세션을 운영하지 않고, 상위 Hermes
 - `/auth/session`은 parent token이 있는 요청을 `parent-dashboard` 사용자로 표시합니다.
 - `/auth/login`은 AX 자체 로그인이 비활성화되었음을 나타내기 위해 `410 Gone`을 반환합니다.
 - `/auth/logout`은 legacy AX cookie만 정리하며 parent Dashboard 인증은 무효화하지 않습니다.
-- 공개 배포의 실제 사용자 인증은 추후 Supabase Auth, Railway/외부 auth, 또는 parent Dashboard 앞단 보호 계층으로 별도 설계합니다.
+- 공개 배포의 실제 사용자 인증은 Supabase Auth를 1차 선택지로 두고, Railway는 호스팅/볼륨/네트워킹 플랫폼으로 분리해 봅니다.
+- 인증과 런타임 지식 저장 방식의 현재 결정은 `docs/decisions/auth-and-persistence.md`를 기준으로 합니다.
 
 레거시 부트스트랩 관리자 환경변수는 기존 DB/세션 호환을 위해 남아 있을 수 있지만, AX UI 접근 제어의 기본 경로로 사용하지 않습니다.
 
