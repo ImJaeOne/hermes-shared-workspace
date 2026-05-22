@@ -79,6 +79,10 @@ hermes-ax-plugin/
 │       ├── SKILL.md                # 메인 스킬 문서
 │       ├── scripts/                # 결정적 MCP 호출 스크립트
 │       └── reference/              # 산출물 샘플 + 플레이북 예시
+├── docs/                           # 결정 기록과 상태 모델 문서
+│   └── decisions/
+│       ├── auth-and-persistence.md
+│       └── planning-research-mvp-state-model.md
 ├── mcp_server.py                   # MCP 서버 (15 tools, stdio)
 ├── __init__.py                     # 플러그인 훅 + 자동 트리거
 ├── plugin.yaml                     # 에이전트 플러그인 매니페스트
@@ -135,7 +139,7 @@ hermes> /reload-mcp
 hermes> /skills list
 # ax-workflow 스킬이 표시되는지 확인
 
-hermes> 영업 에이전트의 워크플로우 목록을 보여줘
+hermes> 기획 에이전트의 워크플로우 목록을 보여줘
 # ax_list_workflows 도구가 호출되는지 확인
 ```
 
@@ -148,9 +152,22 @@ AX Dashboard는 별도 로그인 UI/세션을 운영하지 않고, 상위 Hermes
 - `/auth/session`은 parent token이 있는 요청을 `parent-dashboard` 사용자로 표시합니다.
 - `/auth/login`은 AX 자체 로그인이 비활성화되었음을 나타내기 위해 `410 Gone`을 반환합니다.
 - `/auth/logout`은 legacy AX cookie만 정리하며 parent Dashboard 인증은 무효화하지 않습니다.
-- 공개 배포의 실제 사용자 인증은 추후 Supabase Auth, Railway/외부 auth, 또는 parent Dashboard 앞단 보호 계층으로 별도 설계합니다.
+- 공개 배포의 실제 사용자 인증은 Supabase Auth를 1차 선택지로 두고, Railway는 호스팅/볼륨/네트워킹 플랫폼으로 분리해 봅니다.
+- 인증과 런타임 지식 저장 방식의 현재 결정은 `docs/decisions/auth-and-persistence.md`를 기준으로 합니다.
 
 레거시 부트스트랩 관리자 환경변수는 기존 DB/세션 호환을 위해 남아 있을 수 있지만, AX UI 접근 제어의 기본 경로로 사용하지 않습니다.
+
+### 7. 기획 자료조사 MVP 정보구조
+
+1차 MVP는 Slack 회사명 채널을 AX 회사 프로젝트로 매핑하고, 실제 실행 범위는 `자료조사` 단계로 한정합니다.
+
+- 예: Slack `#덕우전자` → AX 회사 프로젝트 `[덕우전자] 기획 자료조사`
+- `자료 요청 중 → 자료 확인 대기 → 자료조사 실행 중 → 사용자 검토 대기 → 수정 요청 처리 중 → 자료조사 확정` 상태를 기준으로 진행합니다.
+- 업무 상태는 `workflow_instances.status`가 아니라 `stage_definitions`와 `current_stage_id`로 표현합니다.
+- Slack 채널/회사명/후속 단계 placeholder는 MVP에서는 `workflow_instances.metadata_json`에 저장합니다.
+- 시놉시스(목차), 스토리보드, 원고는 다음 단계 placeholder로만 유지합니다.
+
+상세 상태 모델과 DB 활용안은 `docs/decisions/planning-research-mvp-state-model.md`를 기준으로 합니다.
 
 ## Development
 
@@ -225,21 +242,27 @@ for name in sorted(mcp._tool_manager._tools.keys()):
 
 ## Agent Types & Pipelines
 
-### Sales Agent (`sales`)
+### Planning Agent (`planning`)
+
+1차 기획 자료조사 MVP는 회사 프로젝트 중심으로 다음 상태를 사용합니다.
+
 ```
-Lead In → Qualification → Proposal(승인) → Negotiation → Close(승인)
+자료 요청 중 → 자료 확인 대기 → 자료조사 실행 중 → 사용자 검토 대기 → 수정 요청 처리 중 → 자료조사 확정
 ```
 
-### Marketing Agent (`marketing`)
+- Slack `#회사명` 채널은 AX 회사 프로젝트 `[회사명] 기획 자료조사`로 매핑합니다.
+- 실제 실행 대상은 `자료조사`이며, 시놉시스(목차)/스토리보드/원고는 후속 단계 placeholder로 유지합니다.
+- 상세 상태 모델은 `docs/decisions/planning-research-mvp-state-model.md`를 기준으로 합니다.
+
+기존 샘플 데이터의 `Discovery → Brief Draft → Stakeholder Review → Handoff` 흐름은 AX Dashboard의 범용 단계/승인 기능을 보여주는 데모로만 취급합니다.
+
+### Design Agent (`design`)
+
 ```
-블로그:   주제 선정 → 초안 작성 → 리뷰(승인) → 발행
-카드뉴스: 기획 → 디자인 → 카피 작성 → 승인(승인) → 배포
+Research → Concept Sketch → Design Review(승인) → Handoff
 ```
 
-### Support Agent (`support`)
-```
-Ticket Created → Triage → Investigation → Resolution → Follow-up
-```
+디자인 파이프라인은 현재 데모/후속 자동화 영역이며, 기획 자료조사 MVP의 실행 범위에는 포함하지 않습니다.
 
 ## Skill Structure
 
