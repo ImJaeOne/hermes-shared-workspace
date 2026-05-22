@@ -149,6 +149,37 @@ export const updateArtifact = (id: string, body: UpdateArtifactRequest) =>
 
 export const getArtifactFileUrl = (id: string) => `${API_BASE}/artifacts/${id}/file`;
 
+export async function fetchArtifactBlob(id: string): Promise<Blob> {
+  const token = getSessionToken();
+  const res = await fetch(getArtifactFileUrl(id), {
+    method: "GET",
+    credentials: "include",
+    headers: {
+      ...(token ? { "X-Hermes-Session-Token": token } : {}),
+    },
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, await parseErrorDetail(res));
+  }
+  return res.blob();
+}
+
+export async function createArtifactObjectUrl(id: string): Promise<string> {
+  const blob = await fetchArtifactBlob(id);
+  return URL.createObjectURL(blob);
+}
+
+export async function downloadArtifactFile(id: string, filename?: string): Promise<void> {
+  const objectUrl = await createArtifactObjectUrl(id);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename || "artifact";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 export async function uploadArtifact(formData: FormData): Promise<ArtifactUploadResponse> {
   const token = getSessionToken();
   const res = await fetch(`${API_BASE}/artifacts/upload`, {

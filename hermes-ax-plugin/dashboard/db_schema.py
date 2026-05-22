@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS agent_types (
@@ -73,6 +73,11 @@ CREATE TABLE IF NOT EXISTS artifacts (
     file_path TEXT NOT NULL DEFAULT '',
     file_size INTEGER NOT NULL DEFAULT 0,
     mime_type TEXT NOT NULL DEFAULT 'text/markdown',
+    storage_backend TEXT NOT NULL DEFAULT 'local',
+    storage_key TEXT NOT NULL DEFAULT '',
+    original_filename TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    is_latest INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -305,3 +310,29 @@ def _run_migrations(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE stage_transitions ADD COLUMN triggered_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL")
 
         _set_schema_version(conn, 4)
+        current = 4
+
+    if current < 5:
+        if _table_exists(conn, "artifacts"):
+            if not _column_exists(conn, "artifacts", "storage_backend"):
+                conn.execute("ALTER TABLE artifacts ADD COLUMN storage_backend TEXT NOT NULL DEFAULT 'local'")
+            if not _column_exists(conn, "artifacts", "storage_key"):
+                conn.execute("ALTER TABLE artifacts ADD COLUMN storage_key TEXT NOT NULL DEFAULT ''")
+            if not _column_exists(conn, "artifacts", "original_filename"):
+                conn.execute("ALTER TABLE artifacts ADD COLUMN original_filename TEXT NOT NULL DEFAULT ''")
+            if not _column_exists(conn, "artifacts", "version"):
+                conn.execute("ALTER TABLE artifacts ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+            if not _column_exists(conn, "artifacts", "is_latest"):
+                conn.execute("ALTER TABLE artifacts ADD COLUMN is_latest INTEGER NOT NULL DEFAULT 1")
+
+            conn.execute("UPDATE artifacts SET storage_backend='local' WHERE storage_backend='' OR storage_backend IS NULL")
+            conn.execute("UPDATE artifacts SET storage_key=file_path WHERE (storage_key='' OR storage_key IS NULL) AND file_path<>''")
+            conn.execute("UPDATE artifacts SET version=1 WHERE version IS NULL OR version < 1")
+            conn.execute("UPDATE artifacts SET is_latest=1 WHERE is_latest IS NULL")
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_artifacts_latest_group "
+                "ON artifacts(workflow_id, stage_id, artifact_type, is_latest, version)"
+            )
+
+        _set_schema_version(conn, 5)
