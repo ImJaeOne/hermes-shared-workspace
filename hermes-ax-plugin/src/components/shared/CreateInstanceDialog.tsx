@@ -7,7 +7,7 @@ interface Props {
 }
 
 export function CreateInstanceDialog({ onClose }: Props) {
-  const { boardData, refreshBoard, authenticated, authLoading } = useApp();
+  const { boardData, refreshBoard, authenticated, authLoading, selectedAgentId } = useApp();
   const [title, setTitle] = useState("");
   const [priority, setPriority] = useState(0);
   const [assignee, setAssignee] = useState("");
@@ -15,6 +15,26 @@ export function CreateInstanceDialog({ onClose }: Props) {
   const [error, setError] = useState("");
 
   const templateId = boardData?.template_id;
+  const isPlanning = selectedAgentId === "planning";
+  const copy = isPlanning
+    ? {
+        heading: "새 회사 프로젝트 시작",
+        authRequired: "로그인 후 새 회사 프로젝트를 시작할 수 있습니다.",
+        titleLabel: "회사명",
+        titlePlaceholder: "예: 덕우전자",
+        submit: "프로젝트 시작",
+        submitting: "시작 중...",
+        error: "회사 프로젝트를 생성하지 못했습니다.",
+      }
+    : {
+        heading: "새 티켓 생성",
+        authRequired: "로그인 후 새 티켓을 생성할 수 있습니다.",
+        titleLabel: "제목",
+        titlePlaceholder: "예: Acme Corp 딜",
+        submit: "생성",
+        submitting: "생성 중...",
+        error: "워크플로우를 생성하지 못했습니다.",
+      };
 
   const handleSubmit = async () => {
     if (!title.trim() || !templateId || !authenticated) return;
@@ -30,7 +50,7 @@ export function CreateInstanceDialog({ onClose }: Props) {
       await refreshBoard();
       onClose();
     } catch (e) {
-      setError(getApiErrorMessage(e, "워크플로우를 생성하지 못했습니다."));
+      setError(getApiErrorMessage(e, copy.error));
       console.error("Failed to create workflow:", e);
     } finally {
       setSubmitting(false);
@@ -41,17 +61,17 @@ export function CreateInstanceDialog({ onClose }: Props) {
     <div className="ax-overlay" onClick={onClose}>
       <div className="ax-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="ax-dialog-header">
-          <h2>새 티켓 생성</h2>
+          <h2>{copy.heading}</h2>
         </div>
         <div className="ax-dialog-body">
-          {!authenticated && <p className="ax-auth-required">로그인 후 새 티켓을 생성할 수 있습니다.</p>}
+          {!authenticated && <p className="ax-auth-required">{copy.authRequired}</p>}
           <label className="ax-label">
-            제목
+            {copy.titleLabel}
             <input
               className="ax-input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="예: Acme Corp 딜"
+              placeholder={copy.titlePlaceholder}
               autoFocus
               onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
             />
@@ -78,7 +98,7 @@ export function CreateInstanceDialog({ onClose }: Props) {
         <div className="ax-dialog-footer">
           <button className="ax-btn ax-btn-ghost" onClick={onClose}>취소</button>
           <button className="ax-btn ax-btn-primary" onClick={handleSubmit} disabled={!title.trim() || !templateId || !authenticated || authLoading || submitting}>
-            {submitting ? "생성 중..." : "생성"}
+            {submitting ? copy.submitting : copy.submit}
           </button>
         </div>
       </div>

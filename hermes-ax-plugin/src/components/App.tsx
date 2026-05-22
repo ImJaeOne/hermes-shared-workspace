@@ -2,12 +2,13 @@ import React from "react";
 import { AppProvider, useApp } from "../context/AppContext";
 import { Header } from "./layout/Header";
 import { KanbanBoard } from "./kanban/KanbanBoard";
+import { PlanningProjectBoard } from "./planning/PlanningProjectBoard";
 import { PipelineView } from "./pipeline/PipelineView";
 import { SkillListView } from "./skills/SkillListView";
 import { DefinitionEditorView } from "./definition/DefinitionEditorView";
 
 function AppInner() {
-  const { viewMode, loading } = useApp();
+  const { viewMode, loading, selectedAgentId } = useApp();
 
   if (loading) {
     return (
@@ -27,6 +28,9 @@ function AppInner() {
       case "definition":
         return <DefinitionEditorView />;
       default:
+        if (selectedAgentId === "planning") {
+          return <PlanningProjectBoard />;
+        }
         return <KanbanBoard />;
     }
   };

@@ -65,6 +65,7 @@ export function Header() {
 
   const agentStats = stats?.by_agent?.[selectedAgentId];
   const isSubView = viewMode !== "kanban";
+  const showTemplateCreate = selectedAgentId !== "planning";
   const userButtonLabel = authLoading ? "확인 중..." : authenticated ? currentUserLabel : "세션 확인";
 
   return (
@@ -85,7 +86,7 @@ export function Header() {
                 스킬 관리
               </button>
               <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={() => handleNavClick("definition")}>
-                워크플로우 정의
+                {selectedAgentId === "planning" ? "기획 단계 설정" : "워크플로우 정의"}
               </button>
             </>
           )}
@@ -94,9 +95,11 @@ export function Header() {
               {pendingApprovals.length}
             </span>
           )}
-          <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={() => setShowCreate(true)}>
-            {"+ 새 워크플로우"}
-          </button>
+          {showTemplateCreate && (
+            <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={() => setShowCreate(true)}>
+              {"+ 새 워크플로우"}
+            </button>
+          )}
           <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={() => setShowUser(true)}>
             {userButtonLabel}
           </button>
@@ -118,7 +121,7 @@ export function Header() {
             ))}
           </nav>
 
-          {templates.length > 1 && (
+          {selectedAgentId !== "planning" && templates.length > 1 && (
             <nav className="ax-template-tabs">
               {templates.map((tmpl) => {
                 const isActive = selectedTemplateId
@@ -164,7 +167,7 @@ export function Header() {
         </>
       )}
 
-      {showCreate && <CreateWorkflowDialog onClose={() => setShowCreate(false)} />}
+      {showCreate && showTemplateCreate && <CreateWorkflowDialog onClose={() => setShowCreate(false)} />}
       {showUser && <UserPanel onClose={() => setShowUser(false)} />}
     </header>
   );
