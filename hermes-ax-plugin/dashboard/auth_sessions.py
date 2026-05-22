@@ -17,14 +17,55 @@ except ImportError:
     from common import _now, _uuid
 
 
+PARENT_DASHBOARD_USERNAME = "parent-dashboard"
+PARENT_DASHBOARD_DISPLAY_NAME = "Hermes Dashboard"
+PARENT_DASHBOARD_USER_ID = "usr_parent_dashboard"
+
+
 def _get_request_session_token(request: Request) -> str:
-    # In the embedded Hermes dashboard, X-Hermes-Session-Token is the parent
-    # dashboard gate token. Prefer AX's own HttpOnly cookie so that parent
-    # routing auth does not shadow a valid AX login session.
-    cookie_token = request.cookies.get(AX_SESSION_COOKIE, "").strip()
-    if cookie_token:
-        return cookie_token
+    # AX session tokens, if present, only live in AX's legacy cookie. The
+    # X-Hermes-Session-Token header belongs to the parent Hermes dashboard and
+    # must never be looked up in AX's auth_sessions table.
+    return request.cookies.get(AX_SESSION_COOKIE, "").strip()
+
+
+def _get_parent_dashboard_token(request: Request) -> str:
     return request.headers.get("X-Hermes-Session-Token", "").strip()
+
+
+def _upsert_parent_dashboard_user(conn: sqlite3.Connection) -> dict[str, Any]:
+    now = _now()
+    conn.execute(
+        """INSERT INTO users
+           (id, username, display_name, password_hash, role, is_active, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(username) DO UPDATE SET
+             display_name=excluded.display_name,
+             password_hash=excluded.password_hash,
+             role=excluded.role,
+             is_active=excluded.is_active,
+             updated_at=excluded.updated_at""",
+        (
+            PARENT_DASHBOARD_USER_ID,
+            PARENT_DASHBOARD_USERNAME,
+            PARENT_DASHBOARD_DISPLAY_NAME,
+            "disabled-parent-dashboard-auth",
+            "admin",
+            1,
+            now,
+            now,
+        ),
+    )
+    row = conn.execute("SELECT * FROM users WHERE username=?", (PARENT_DASHBOARD_USERNAME,)).fetchone()
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "role": row["role"],
+        "is_active": bool(row["is_active"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 
@@ -85,11 +126,9 @@ def _get_authenticated_session(conn: sqlite3.Connection, token: str) -> dict[str
 
 
 def _require_authenticated_user(conn: sqlite3.Connection, request: Request) -> dict[str, Any]:
-    token = _get_request_session_token(request)
-    auth = _get_authenticated_session(conn, token)
-    if not auth:
-        raise HTTPException(401, "Authentication required")
-    return auth["user"]
+    if _get_parent_dashboard_token(request):
+        return _upsert_parent_dashboard_user(conn)
+    raise HTTPException(401, "Authentication required")
 
 
 

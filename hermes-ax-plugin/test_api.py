@@ -41,16 +41,14 @@ def check(label, condition, detail=""):
         print(f"  FAIL  {label} — {detail}")
 
 
-def login_and_check():
-    r = client.post("/auth/login", json={"username": "admin", "password": "testpass123"})
-    check("POST /auth/login status", r.status_code == 200, f"got {r.status_code}")
-    if r.status_code != 200:
-        return None
+def check_parent_session():
+    r = client.get("/auth/session")
+    check("GET /auth/session status", r.status_code == 200, f"got {r.status_code}: {r.text}")
     data = r.json()
-    check("login ok response", data.get("ok") is True, str(data))
-    check("login user is admin", data.get("user", {}).get("username") == "admin", str(data))
-    session = client.get("/auth/session")
-    check("GET /auth/session authenticated", session.status_code == 200 and session.json().get("authenticated") is True, str(session.text))
+    user = data.get("user") or {}
+    check("parent session authenticated", data.get("authenticated") is True, str(data))
+    check("parent session user", user.get("username") == "parent-dashboard", str(data))
+    check("parent session has no AX expiry", data.get("expires_at") is None, str(data))
     return data
 
 
@@ -58,9 +56,11 @@ print("\n=== Auth ===")
 r = anon.post("/workflows", json={
     "template_id": "planning_pipeline_v1",
     "title": "Unauthorized Workflow",
-}, headers=PARENT_GATE_HEADERS)
-check("unauthenticated write blocked", r.status_code == 401, f"got {r.status_code}")
-login_and_check()
+})
+check("write without parent token blocked", r.status_code == 401, f"got {r.status_code}")
+check_parent_session()
+r = client.post("/auth/login", json={"username": "admin", "password": "testpass123"})
+check("AX login endpoint disabled", r.status_code == 410, f"got {r.status_code}: {r.text}")
 
 print("\n=== Agents ===")
 r = client.get("/agents")
@@ -124,7 +124,7 @@ create_log = next((log for log in detail.get("activity_logs", []) if log.get("ac
 check("workflow.create activity exists", create_log is not None, str(detail.get("activity_logs")))
 if create_log:
     check("workflow.create actor is human", create_log.get("actor_kind") == "human", str(create_log))
-    check("workflow.create actor label matches", create_log.get("actor_label") == "테스트 관리자", str(create_log))
+    check("workflow.create actor label matches", create_log.get("actor_label") == "Hermes Dashboard", str(create_log))
 
 print("\n=== Transition ===")
 r = client.post(f"/workflows/{wf_id}/transition", json={
@@ -174,7 +174,7 @@ comment_id = r.json()["id"]
 r = client.get(f"/artifacts/{art_id}")
 comments = r.json()["comments"]
 check("1 comment on artifact", len(comments) == 1)
-check("comment author defaulted to display name", comments[0]["author"] == "테스트 관리자", str(comments[0]))
+check("comment author defaulted to display name", comments[0]["author"] == "Hermes Dashboard", str(comments[0]))
 check("comment author user id stored", comments[0].get("author_user_id") is not None, str(comments[0]))
 
 r = client.patch(f"/comments/{comment_id}", json={"body": "Updated: 구조와 우선순위가 명확합니다."})
@@ -223,12 +223,12 @@ print("\n=== Logout ===")
 r = client.post("/auth/logout")
 check("POST /auth/logout status", r.status_code == 200)
 r = client.get("/auth/session")
-check("session cleared after logout", r.status_code == 200 and r.json().get("authenticated") is False, str(r.text))
+check("parent session remains after AX logout", r.status_code == 200 and r.json().get("authenticated") is True, str(r.text))
 r = client.post("/workflows", json={
     "template_id": "design_pipeline_v1",
-    "title": "Should fail after logout",
+    "title": "Still allowed by parent dashboard token",
 })
-check("write blocked after logout", r.status_code == 401, f"got {r.status_code}")
+check("write still allowed after AX logout", r.status_code == 200, f"got {r.status_code}: {r.text}")
 
 print(f"\n{'='*40}")
 print(f"Results: {passed} passed, {failed} failed, {passed+failed} total")

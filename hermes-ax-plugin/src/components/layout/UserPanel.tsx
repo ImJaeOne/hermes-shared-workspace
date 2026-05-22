@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { getApiErrorMessage, isUnauthorizedError } from "../../api/client";
+import { getApiErrorMessage } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 
 interface Props {
@@ -13,39 +13,18 @@ export function UserPanel({ onClose }: Props) {
     authenticated,
     authLoading,
     currentUserLabel,
-    login,
-    logout,
     refreshAll,
   } = useApp();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const handleLogin = async () => {
-    if (!username.trim() || !password) return;
+  const handleRefresh = async () => {
     setSubmitting(true);
     setError("");
     try {
-      await login({ username: username.trim(), password });
       await refreshAll();
-      onClose();
     } catch (e) {
-      setError(isUnauthorizedError(e) ? "아이디 또는 비밀번호를 확인해주세요." : getApiErrorMessage(e, "로그인에 실패했습니다."));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    setSubmitting(true);
-    setError("");
-    try {
-      await logout();
-      await refreshAll();
-      onClose();
-    } catch (e) {
-      setError(getApiErrorMessage(e, "로그아웃에 실패했습니다."));
+      setError(getApiErrorMessage(e, "세션 정보를 새로고침하지 못했습니다."));
     } finally {
       setSubmitting(false);
     }
@@ -57,7 +36,7 @@ export function UserPanel({ onClose }: Props) {
     <div className="ax-overlay" onClick={onClose}>
       <div className="ax-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="ax-dialog-header">
-          <h2>{authenticated ? "세션 정보" : "로그인"}</h2>
+          <h2>대시보드 세션</h2>
         </div>
         <div className="ax-dialog-body">
           {authenticated && authUser ? (
@@ -80,47 +59,24 @@ export function UserPanel({ onClose }: Props) {
                   <span>{expiresAtLabel}</span>
                 </div>
               )}
+              <p className="ax-hint">
+                AX는 별도 로그인을 사용하지 않습니다. 인증은 상위 Hermes Dashboard 세션에서 관리됩니다.
+              </p>
             </div>
           ) : (
-            <>
-              <label className="ax-label">
-                아이디
-                <input
-                  className="ax-input"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="username"
-                  autoFocus
-                  onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-                />
-              </label>
-              <label className="ax-label">
-                비밀번호
-                <input
-                  className="ax-input"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="password"
-                  onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-                />
-              </label>
-              <p className="ax-hint">로그인하면 코멘트, 승인, 산출물 추가 등 쓰기 작업을 사용할 수 있습니다.</p>
-            </>
+            <div className="ax-auth-session-card">
+              <p className="ax-hint">
+                상위 Hermes Dashboard 세션을 확인할 수 없습니다. 대시보드에서 인증한 뒤 AX를 다시 열어주세요.
+              </p>
+            </div>
           )}
           {error && <p className="ax-form-error">{error}</p>}
         </div>
         <div className="ax-dialog-footer">
           <button className="ax-btn ax-btn-ghost" onClick={onClose}>닫기</button>
-          {authenticated ? (
-            <button className="ax-btn ax-btn-primary" onClick={handleLogout} disabled={submitting || authLoading}>
-              {submitting || authLoading ? "처리 중..." : "로그아웃"}
-            </button>
-          ) : (
-            <button className="ax-btn ax-btn-primary" onClick={handleLogin} disabled={!username.trim() || !password || submitting || authLoading}>
-              {submitting || authLoading ? "로그인 중..." : "로그인"}
-            </button>
-          )}
+          <button className="ax-btn ax-btn-primary" onClick={handleRefresh} disabled={submitting || authLoading}>
+            {submitting || authLoading ? "확인 중..." : "세션 새로고침"}
+          </button>
         </div>
       </div>
     </div>
