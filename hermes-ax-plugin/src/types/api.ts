@@ -24,18 +24,6 @@ export interface AuthUser {
   updated_at: string;
 }
 
-export interface LoginRequest {
-  username: string;
-  password: string;
-}
-
-export interface LoginResponse {
-  ok: boolean;
-  token: string;
-  expires_at: string;
-  user: AuthUser;
-}
-
 export interface AuthSessionResponse {
   authenticated: boolean;
   user: AuthUser | null;

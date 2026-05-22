@@ -139,22 +139,18 @@ hermes> 영업 에이전트의 워크플로우 목록을 보여줘
 # ax_list_workflows 도구가 호출되는지 확인
 ```
 
-### 6. AX 인증 부트스트랩 관리자 설정
+### 6. AX 인증 방향
 
-PR 1 기준으로 초기 관리자 계정은 환경변수로 부트스트랩합니다.
+AX Dashboard는 별도 로그인 UI/세션을 운영하지 않고, 상위 Hermes Dashboard가 주입하는 parent gate token을 사용합니다.
 
-```bash
-export HERMES_AX_BOOTSTRAP_ADMIN_USERNAME=admin
-export HERMES_AX_BOOTSTRAP_ADMIN_PASSWORD='change-me-now'
-export HERMES_AX_BOOTSTRAP_ADMIN_DISPLAY_NAME='AX Admin'
-```
+- `/api/plugins/hermes-ax/*` 요청은 상위 Dashboard의 `X-Hermes-Session-Token` 검증을 통과한 뒤 AX 라우터에 도달한다고 전제합니다.
+- AX 프론트엔드는 `window.__HERMES_SESSION_TOKEN__`을 읽어 API 요청에 전달하며, 이 값을 AX 자체 세션 토큰처럼 저장하거나 삭제하지 않습니다.
+- `/auth/session`은 parent token이 있는 요청을 `parent-dashboard` 사용자로 표시합니다.
+- `/auth/login`은 AX 자체 로그인이 비활성화되었음을 나타내기 위해 `410 Gone`을 반환합니다.
+- `/auth/logout`은 legacy AX cookie만 정리하며 parent Dashboard 인증은 무효화하지 않습니다.
+- 공개 배포의 실제 사용자 인증은 추후 Supabase Auth, Railway/외부 auth, 또는 parent Dashboard 앞단 보호 계층으로 별도 설계합니다.
 
-- `HERMES_AX_BOOTSTRAP_ADMIN_USERNAME`와 `HERMES_AX_BOOTSTRAP_ADMIN_PASSWORD`는 함께 설정해야 합니다.
-- 플러그인 시작 시 `users` 테이블에 관리자 계정을 생성하거나 같은 username의 계정을 admin으로 갱신합니다.
-- 비밀번호는 평문 저장하지 않고 PBKDF2-SHA256 해시로 저장합니다.
-- PR 2 기준으로 `/auth/login`, `/auth/session`, `/auth/logout` AX 독립 세션 API가 포함됩니다.
-- 기본 세션 쿠키는 로컬 개발 편의를 위해 `Secure=false`로 동작하며, HTTPS 배포에서는 `HERMES_AX_SESSION_COOKIE_SECURE=true`를 설정해 Secure 쿠키를 활성화할 수 있습니다.
-- 로그인 UI와 활동 타임라인은 다음 PR(`feature/dashboard/auth-ui-activity-timeline`)에서 이어집니다.
+레거시 부트스트랩 관리자 환경변수는 기존 DB/세션 호환을 위해 남아 있을 수 있지만, AX UI 접근 제어의 기본 경로로 사용하지 않습니다.
 
 ## Development
 

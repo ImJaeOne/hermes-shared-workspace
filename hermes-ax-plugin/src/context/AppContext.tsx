@@ -1,17 +1,14 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { AgentType, AgentTypeId, ApprovalRequest, Skill } from "../types/models";
-import type { AuthUser, BoardResponse, LoginRequest, StatsResponse } from "../types/api";
+import type { AuthUser, BoardResponse, StatsResponse } from "../types/api";
 import {
-  clearSessionToken,
   getAgents,
   getApprovals,
   getAuthSession,
   getBoard,
   getSkills,
   getStats,
-  login as loginRequest,
   logout as logoutRequest,
-  setSessionToken,
   usePolling,
 } from "../api/client";
 
@@ -23,7 +20,6 @@ interface AppState {
   authenticated: boolean;
   authLoading: boolean;
   currentUserLabel: string;
-  login: (payload: LoginRequest) => Promise<void>;
   logout: () => Promise<void>;
   refreshAuthSession: () => Promise<void>;
   selectedAgentId: AgentTypeId;
@@ -85,27 +81,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setAuthUser(session.user);
         setAuthExpiresAt(session.expires_at);
       } else {
-        clearSessionToken();
         setAuthUser(null);
         setAuthExpiresAt(null);
       }
     } catch (e) {
       console.error("Failed to load auth session:", e);
-      clearSessionToken();
       setAuthUser(null);
       setAuthExpiresAt(null);
-    } finally {
-      setAuthLoading(false);
-    }
-  }, []);
-
-  const login = useCallback(async (payload: LoginRequest) => {
-    setAuthLoading(true);
-    try {
-      const response = await loginRequest(payload);
-      setSessionToken(response.token);
-      setAuthUser(response.user);
-      setAuthExpiresAt(response.expires_at);
     } finally {
       setAuthLoading(false);
     }
@@ -115,13 +97,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setAuthLoading(true);
     try {
       await logoutRequest();
-      clearSessionToken();
-      setAuthUser(null);
-      setAuthExpiresAt(null);
+      await refreshAuthSession();
     } finally {
       setAuthLoading(false);
     }
-  }, []);
+  }, [refreshAuthSession]);
 
   const loadAgents = useCallback(async () => {
     try {
@@ -202,7 +182,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         authenticated: Boolean(authUser),
         authLoading,
         currentUserLabel,
-        login,
         logout,
         refreshAuthSession,
         selectedAgentId,

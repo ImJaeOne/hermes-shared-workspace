@@ -65,7 +65,7 @@ export function Header() {
 
   const agentStats = stats?.by_agent?.[selectedAgentId];
   const isSubView = viewMode !== "kanban";
-  const userButtonLabel = authLoading ? "확인 중..." : authenticated ? currentUserLabel : "로그인";
+  const userButtonLabel = authLoading ? "확인 중..." : authenticated ? currentUserLabel : "세션 확인";
 
   return (
     <header className="ax-header">
