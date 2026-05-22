@@ -18,10 +18,13 @@ except ImportError:
 
 
 def _get_request_session_token(request: Request) -> str:
-    header_token = request.headers.get("X-Hermes-Session-Token", "").strip()
-    if header_token:
-        return header_token
-    return request.cookies.get(AX_SESSION_COOKIE, "").strip()
+    # In the embedded Hermes dashboard, X-Hermes-Session-Token is the parent
+    # dashboard gate token. Prefer AX's own HttpOnly cookie so that parent
+    # routing auth does not shadow a valid AX login session.
+    cookie_token = request.cookies.get(AX_SESSION_COOKIE, "").strip()
+    if cookie_token:
+        return cookie_token
+    return request.headers.get("X-Hermes-Session-Token", "").strip()
 
 
 
