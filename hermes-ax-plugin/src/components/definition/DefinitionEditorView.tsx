@@ -19,6 +19,7 @@ export function DefinitionEditorView() {
     ? agent?.templates?.find((t) => t.id === selectedTemplateId)
     : agent?.templates?.[0];
   const templateId = template?.id;
+  const isPlanning = selectedAgentId === "planning";
 
   const loadDefinition = useCallback(async () => {
     if (!templateId) return;
@@ -77,7 +78,7 @@ export function DefinitionEditorView() {
   return (
     <div className="ax-definition-view">
       <div className="ax-definition-header">
-        <h2 className="ax-section-title">워크플로우 정의 — {template?.name}</h2>
+        <h2 className="ax-section-title">{isPlanning ? "기획 단계 설정" : "워크플로우 정의"} — {template?.name}</h2>
         <div className="ax-definition-actions">
           {saved && <span className="ax-save-indicator">저장됨</span>}
           <button className="ax-btn ax-btn-primary ax-btn-sm" onClick={handleSave} disabled={saving}>
@@ -92,7 +93,7 @@ export function DefinitionEditorView() {
           <MarkdownEditor
             value={content}
             onChange={setContent}
-            placeholder="워크플로우 플레이북을 작성하세요... (스킬 실행 방법, 상태 전환 조건 등)"
+            placeholder={isPlanning ? "기획 단계 운영 메모를 작성하세요... (자료조사 기준, 검토 조건 등)" : "워크플로우 플레이북을 작성하세요... (스킬 실행 방법, 상태 전환 조건 등)"}
             rows={16}
           />
         </div>
