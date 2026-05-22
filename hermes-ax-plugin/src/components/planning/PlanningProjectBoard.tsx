@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getApiErrorMessage, getWorkflow } from "../../api/client";
+import { downloadArtifactFile, getApiErrorMessage, getArtifact, getWorkflow } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import type { WorkflowDetailResponse } from "../../types/api";
 import type { Artifact, StageDefinition, WorkflowInstance } from "../../types/models";
 import { CreateInstanceDialog } from "../shared/CreateInstanceDialog";
 import { EmptyState } from "../shared/EmptyState";
 import { PriorityBadge, StatusBadge } from "../shared/StatusBadge";
+import { ArtifactViewer } from "../artifacts/ArtifactViewer";
 
 interface ProjectSummary {
   workflow: WorkflowInstance;
@@ -183,9 +184,20 @@ export function PlanningProjectBoard() {
 
 function ProjectDetail({ workflow, onOpenPipeline }: { workflow: WorkflowDetailResponse; onOpenPipeline: () => void }) {
   const currentStage = workflow.stages.find((stage) => stage.is_current);
-  const latestArtifacts = [...workflow.artifacts]
-    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-    .slice(0, 6);
+  const latestArtifacts = useMemo(() => {
+    const latestOnly = workflow.artifacts.filter((artifact) => artifact.is_latest !== 0);
+    const candidates = latestOnly.length > 0 ? latestOnly : workflow.artifacts;
+    return [...candidates]
+      .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+      .slice(0, 6);
+  }, [workflow.artifacts]);
+  const latestArtifactIds = latestArtifacts.map((artifact) => artifact.id).join("|");
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(latestArtifacts[0]?.id ?? null);
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
+  const [artifactLoading, setArtifactLoading] = useState(false);
+  const [artifactError, setArtifactError] = useState("");
+  const [downloadError, setDownloadError] = useState("");
+  const artifactRequestSeqRef = useRef(0);
   const completedCount = workflow.stages.filter((stage) => stage.is_completed).length;
   const progressCount = Math.min(workflow.stages.length, completedCount + 1);
   const progressPercent = workflow.status === "completed"
@@ -193,6 +205,58 @@ function ProjectDetail({ workflow, onOpenPipeline }: { workflow: WorkflowDetailR
     : workflow.stages.length > 0
       ? Math.round((progressCount / workflow.stages.length) * 100)
       : 0;
+
+  useEffect(() => {
+    if (latestArtifacts.length === 0) {
+      setSelectedArtifactId(null);
+      setSelectedArtifact(null);
+      return;
+    }
+    if (!selectedArtifactId || !latestArtifacts.some((artifact) => artifact.id === selectedArtifactId)) {
+      setSelectedArtifactId(latestArtifacts[0].id);
+    }
+  }, [latestArtifactIds, latestArtifacts, selectedArtifactId]);
+
+  useEffect(() => {
+    if (!selectedArtifactId) {
+      artifactRequestSeqRef.current += 1;
+      setSelectedArtifact(null);
+      setArtifactLoading(false);
+      setArtifactError("");
+      return;
+    }
+
+    const requestSeq = artifactRequestSeqRef.current + 1;
+    artifactRequestSeqRef.current = requestSeq;
+    setArtifactLoading(true);
+    setArtifactError("");
+    setDownloadError("");
+    void getArtifact(selectedArtifactId)
+      .then((artifact) => {
+        if (artifactRequestSeqRef.current !== requestSeq) return;
+        setSelectedArtifact(artifact);
+      })
+      .catch((error) => {
+        if (artifactRequestSeqRef.current !== requestSeq) return;
+        setSelectedArtifact(null);
+        setArtifactError(getApiErrorMessage(error, "산출물 상세 정보를 불러오지 못했습니다."));
+      })
+      .finally(() => {
+        if (artifactRequestSeqRef.current === requestSeq) {
+          setArtifactLoading(false);
+        }
+      });
+  }, [selectedArtifactId]);
+
+  const handleDownloadSelectedArtifact = async () => {
+    if (!selectedArtifact) return;
+    setDownloadError("");
+    try {
+      await downloadArtifactFile(selectedArtifact.id, getArtifactDownloadName(selectedArtifact));
+    } catch (error) {
+      setDownloadError(getApiErrorMessage(error, "산출물을 다운로드하지 못했습니다."));
+    }
+  };
 
   return (
     <div className="ax-planning-detail-content">
@@ -246,10 +310,47 @@ function ProjectDetail({ workflow, onOpenPipeline }: { workflow: WorkflowDetailR
           ) : (
             <div className="ax-planning-artifact-list">
               {latestArtifacts.map((artifact) => (
-                <ArtifactRow key={artifact.id} artifact={artifact} stages={workflow.stages} />
+                <ArtifactRow
+                  key={artifact.id}
+                  artifact={artifact}
+                  stages={workflow.stages}
+                  selected={artifact.id === selectedArtifactId}
+                  onSelect={() => setSelectedArtifactId(artifact.id)}
+                />
               ))}
             </div>
           )}
+          <div className="ax-planning-artifact-preview">
+            <div className="ax-planning-artifact-preview-header">
+              <div>
+                <p className="ax-eyebrow">산출물 미리보기</p>
+                <h4>{selectedArtifact?.title ?? "산출물을 선택하세요"}</h4>
+                {selectedArtifact && (
+                  <span>
+                    v{selectedArtifact.version ?? 1} · {selectedArtifact.mime_type || selectedArtifact.content_type}
+                    {selectedArtifact.original_filename ? ` · ${selectedArtifact.original_filename}` : ""}
+                  </span>
+                )}
+              </div>
+              <button
+                className="ax-btn ax-btn-ghost ax-btn-sm"
+                onClick={handleDownloadSelectedArtifact}
+                disabled={!selectedArtifact || artifactLoading}
+              >
+                다운로드
+              </button>
+            </div>
+            {artifactLoading ? (
+              <p className="ax-planning-muted">산출물 미리보기를 불러오는 중입니다...</p>
+            ) : artifactError ? (
+              <p className="ax-form-error">{artifactError}</p>
+            ) : selectedArtifact ? (
+              <ArtifactViewer artifact={selectedArtifact} />
+            ) : (
+              <p className="ax-planning-muted">최신 산출물 행을 선택하면 미리보기가 표시됩니다.</p>
+            )}
+            {downloadError && <p className="ax-form-error">{downloadError}</p>}
+          </div>
         </section>
       </div>
 
@@ -281,19 +382,26 @@ function StageStatusRow({ stage }: { stage: StageDefinition & { is_completed: bo
   );
 }
 
-function ArtifactRow({ artifact, stages }: { artifact: Artifact; stages: StageDefinition[] }) {
+function ArtifactRow({ artifact, stages, selected, onSelect }: { artifact: Artifact; stages: StageDefinition[]; selected: boolean; onSelect: () => void }) {
   const stageName = stages.find((stage) => stage.id === artifact.stage_id)?.name;
   return (
-    <div className="ax-planning-artifact-row">
+    <button
+      type="button"
+      className={`ax-planning-artifact-row ${selected ? "ax-planning-artifact-row-active" : ""}`}
+      onClick={onSelect}
+    >
       <div>
         <strong>{artifact.title}</strong>
-        <span>{getPlanningStageLabel(stageName ?? artifact.artifact_type)} · {artifact.artifact_type}</span>
+        <span>
+          {getPlanningStageLabel(stageName ?? artifact.artifact_type)} · {artifact.artifact_type}
+          {artifact.version ? ` · v${artifact.version}` : ""}
+        </span>
       </div>
       <div className="ax-planning-artifact-meta">
         <StatusBadge status={artifact.status} />
         <span>{formatDateTime(artifact.updated_at)}</span>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -330,6 +438,20 @@ function formatStageStatus(stage: { is_completed?: boolean; is_current?: boolean
   if (stage.is_completed) return "완료";
   if (stage.is_current) return "진행 중";
   return "다음 단계";
+}
+
+function getArtifactDownloadName(artifact: Artifact): string {
+  if (artifact.original_filename) return artifact.original_filename;
+  const safeTitle = artifact.title.trim().replace(/[\\/:*?"<>|]+/g, "_") || artifact.id;
+  const mime = artifact.mime_type || artifact.content_type;
+  const ext = mime === "text/markdown"
+    ? "md"
+    : mime === "text/plain"
+      ? "txt"
+      : mime === "application/json"
+        ? "json"
+        : "bin";
+  return `${safeTitle}.${ext}`;
 }
 
 function formatDateTime(dateStr: string): string {

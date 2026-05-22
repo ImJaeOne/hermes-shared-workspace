@@ -9,24 +9,42 @@ from fastapi.responses import FileResponse
 
 try:
     from .activity import _record_user_activity
-    from .artifact_files import _ext_from_mime, _write_artifact_to_disk
+    from .artifact_storage import get_artifact_storage
     from .auth_sessions import _require_authenticated_user
     from .common import _now, _uuid
-    from .db import ARTIFACTS_DIR, get_db
+    from .db import get_db
     from .events import _emit_event
     from .rows import row_to_dict, rows_to_list
     from .schemas import CreateArtifactBody, UpdateArtifactBody
 except ImportError:
     from activity import _record_user_activity
-    from artifact_files import _ext_from_mime, _write_artifact_to_disk
+    from artifact_storage import get_artifact_storage
     from auth_sessions import _require_authenticated_user
     from common import _now, _uuid
-    from db import ARTIFACTS_DIR, get_db
+    from db import get_db
     from events import _emit_event
     from rows import row_to_dict, rows_to_list
     from schemas import CreateArtifactBody, UpdateArtifactBody
 
 router = APIRouter()
+
+
+def _reserve_artifact_version(conn, workflow_id: str, stage_id: str, artifact_type: str) -> int:
+    """Mark older artifacts in a workflow/stage/type group as non-latest."""
+    row = conn.execute(
+        """SELECT COALESCE(MAX(version), 0) AS max_version
+           FROM artifacts
+           WHERE workflow_id=? AND stage_id=? AND artifact_type=?""",
+        (workflow_id, stage_id, artifact_type),
+    ).fetchone()
+    next_version = int(row["max_version"] or 0) + 1
+    conn.execute(
+        """UPDATE artifacts
+           SET is_latest=0
+           WHERE workflow_id=? AND stage_id=? AND artifact_type=?""",
+        (workflow_id, stage_id, artifact_type),
+    )
+    return next_version
 
 
 @router.post("/artifacts")
@@ -41,15 +59,28 @@ def create_artifact(body: CreateArtifactBody, request: Request):
         art_id = _uuid("art_")
         mime_type = body.content_type
 
-        ext = _ext_from_mime(mime_type)
         content_bytes = body.content.encode("utf-8")
-        file_path, file_size = _write_artifact_to_disk(body.workflow_id, body.stage_id, art_id, content_bytes, ext)
+        stored = get_artifact_storage().write_bytes(
+            workflow_id=body.workflow_id,
+            stage_id=body.stage_id,
+            artifact_id=art_id,
+            content=content_bytes,
+            mime_type=mime_type,
+        )
+        version = _reserve_artifact_version(conn, body.workflow_id, body.stage_id, body.artifact_type)
 
         conn.execute(
             """INSERT INTO artifacts
-               (id, workflow_id, stage_id, artifact_type, title, content, content_type, status, file_path, file_size, mime_type, created_at, updated_at, created_by_user_id, updated_by_user_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (art_id, body.workflow_id, body.stage_id, body.artifact_type, body.title, body.content, body.content_type, body.status, file_path, file_size, mime_type, now, now, user["id"], user["id"]),
+               (id, workflow_id, stage_id, artifact_type, title, content, content_type, status,
+                file_path, file_size, mime_type, storage_backend, storage_key, original_filename,
+                version, is_latest, created_at, updated_at, created_by_user_id, updated_by_user_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                art_id, body.workflow_id, body.stage_id, body.artifact_type, body.title,
+                body.content, body.content_type, body.status, stored.file_path, stored.file_size,
+                stored.mime_type, stored.storage_backend, stored.storage_key, stored.original_filename,
+                version, 1, now, now, user["id"], user["id"],
+            ),
         )
         _emit_event(conn, "artifact_added", body.workflow_id, art_id)
         _record_user_activity(
@@ -87,14 +118,18 @@ async def upload_artifact(
         art_id = _uuid("art_")
 
         mime_type = file.content_type or "application/octet-stream"
-        ext = _ext_from_mime(mime_type)
-        if file.filename:
-            parts = file.filename.rsplit(".", 1)
-            if len(parts) > 1:
-                ext = parts[1].lower()
+        original_filename = file.filename or ""
 
         content_bytes = await file.read()
-        file_path, file_size = _write_artifact_to_disk(workflow_id, stage_id, art_id, content_bytes, ext)
+        stored = get_artifact_storage().write_bytes(
+            workflow_id=workflow_id,
+            stage_id=stage_id,
+            artifact_id=art_id,
+            content=content_bytes,
+            mime_type=mime_type,
+            original_filename=original_filename,
+        )
+        version = _reserve_artifact_version(conn, workflow_id, stage_id, artifact_type)
 
         content_text = ""
         if mime_type.startswith("text/") or mime_type == "application/json":
@@ -105,9 +140,15 @@ async def upload_artifact(
 
         conn.execute(
             """INSERT INTO artifacts
-               (id, workflow_id, stage_id, artifact_type, title, content, content_type, status, file_path, file_size, mime_type, created_at, updated_at, created_by_user_id, updated_by_user_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (art_id, workflow_id, stage_id, artifact_type, title, content_text, mime_type, status, file_path, file_size, mime_type, now, now, user["id"], user["id"]),
+               (id, workflow_id, stage_id, artifact_type, title, content, content_type, status,
+                file_path, file_size, mime_type, storage_backend, storage_key, original_filename,
+                version, is_latest, created_at, updated_at, created_by_user_id, updated_by_user_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                art_id, workflow_id, stage_id, artifact_type, title, content_text, mime_type, status,
+                stored.file_path, stored.file_size, stored.mime_type, stored.storage_backend,
+                stored.storage_key, stored.original_filename, version, 1, now, now, user["id"], user["id"],
+            ),
         )
         _emit_event(conn, "artifact_added", workflow_id, art_id)
         _record_user_activity(
@@ -118,10 +159,10 @@ async def upload_artifact(
             workflow_id=workflow_id,
             artifact_id=art_id,
             target_id=art_id,
-            metadata={"stage_id": stage_id, "artifact_type": artifact_type, "title": title, "mime_type": mime_type, "file_size": file_size},
+            metadata={"stage_id": stage_id, "artifact_type": artifact_type, "title": title, "mime_type": mime_type, "file_size": stored.file_size},
         )
 
-    return {"id": art_id, "file_path": file_path, "file_size": file_size, "mime_type": mime_type}
+    return {"id": art_id, "file_path": stored.file_path, "file_size": stored.file_size, "mime_type": stored.mime_type}
 
 
 @router.get("/artifacts/{art_id}")
@@ -144,22 +185,35 @@ def get_artifact_file(art_id: str):
         if not art:
             raise HTTPException(404, "Artifact not found")
 
-    file_path = art.get("file_path", "")
-    if not file_path:
+    storage = get_artifact_storage()
+    storage_key = art.get("storage_key") or art.get("file_path", "")
+    if not storage_key:
         if art["content"]:
-            ext = _ext_from_mime(art.get("mime_type") or art["content_type"])
+            mime = art.get("mime_type") or art["content_type"]
             content_bytes = art["content"].encode("utf-8")
-            rel_path, file_size = _write_artifact_to_disk(art["workflow_id"], art["stage_id"], art_id, content_bytes, ext)
+            stored = storage.write_bytes(
+                workflow_id=art["workflow_id"],
+                stage_id=art["stage_id"],
+                artifact_id=art_id,
+                content=content_bytes,
+                mime_type=mime,
+                original_filename=art.get("original_filename") or "",
+            )
             with get_db() as conn:
                 conn.execute(
-                    "UPDATE artifacts SET file_path=?, file_size=?, mime_type=? WHERE id=?",
-                    (rel_path, file_size, art.get("mime_type") or art["content_type"], art_id),
+                    """UPDATE artifacts
+                       SET file_path=?, file_size=?, mime_type=?, storage_backend=?, storage_key=?
+                       WHERE id=?""",
+                    (stored.file_path, stored.file_size, stored.mime_type, stored.storage_backend, stored.storage_key, art_id),
                 )
-            file_path = rel_path
+            storage_key = stored.storage_key
         else:
             raise HTTPException(404, "No file content")
 
-    full_path = ARTIFACTS_DIR / file_path
+    try:
+        full_path = storage.resolve_path(storage_key)
+    except ValueError:
+        raise HTTPException(400, "Invalid artifact storage key")
     if not full_path.exists():
         raise HTTPException(404, "File not found on disk")
 
@@ -187,13 +241,19 @@ def update_artifact(art_id: str, body: UpdateArtifactBody, request: Request):
 
         if body.content is not None:
             mime = body.content_type or art["content_type"]
-            ext = _ext_from_mime(mime)
             content_bytes = body.content.encode("utf-8")
-            file_path, file_size = _write_artifact_to_disk(art["workflow_id"], art["stage_id"], art_id, content_bytes, ext)
-            updates.extend(["file_path=?", "file_size=?", "mime_type=?"])
-            params.extend([file_path, file_size, mime])
-            changed_fields["file_path"] = file_path
-            changed_fields["file_size"] = file_size
+            stored = get_artifact_storage().write_bytes(
+                workflow_id=art["workflow_id"],
+                stage_id=art["stage_id"],
+                artifact_id=art_id,
+                content=content_bytes,
+                mime_type=mime,
+                original_filename=art.get("original_filename") or "",
+            )
+            updates.extend(["file_path=?", "file_size=?", "mime_type=?", "storage_backend=?", "storage_key=?"])
+            params.extend([stored.file_path, stored.file_size, stored.mime_type, stored.storage_backend, stored.storage_key])
+            changed_fields["file_path"] = stored.file_path
+            changed_fields["file_size"] = stored.file_size
             changed_fields["mime_type"] = mime
 
         if updates:

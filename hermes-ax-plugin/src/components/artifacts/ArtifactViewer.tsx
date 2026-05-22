@@ -1,6 +1,6 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import type { Artifact } from "../../types/models";
-import { getArtifactFileUrl } from "../../api/client";
+import { createArtifactObjectUrl, downloadArtifactFile, getApiErrorMessage } from "../../api/client";
 
 interface Props {
   artifact: Artifact;
@@ -41,8 +41,47 @@ function renderMarkdown(md: string): string {
 export function ArtifactViewer({ artifact }: Props) {
   const { content, mime_type, content_type, id } = artifact;
   const effectiveMime = mime_type || content_type || "text/plain";
+  const hasFile = Boolean(artifact.storage_key || artifact.file_path);
+  const [objectUrl, setObjectUrl] = useState("");
+  const [fileError, setFileError] = useState("");
+  const [downloadError, setDownloadError] = useState("");
 
-  if (!content && !artifact.file_path) {
+  useEffect(() => {
+    let cancelled = false;
+    let nextUrl = "";
+    const shouldFetchBlob = hasFile && (
+      effectiveMime.startsWith("image/") ||
+      effectiveMime === "application/pdf" ||
+      (effectiveMime === "text/html" && !content)
+    );
+
+    setObjectUrl("");
+    setFileError("");
+    setDownloadError("");
+    if (!shouldFetchBlob) return undefined;
+
+    void createArtifactObjectUrl(id)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        nextUrl = url;
+        setObjectUrl(url);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setFileError(getApiErrorMessage(error, "파일 미리보기를 불러오지 못했습니다."));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (nextUrl) URL.revokeObjectURL(nextUrl);
+    };
+  }, [content, effectiveMime, hasFile, id]);
+
+  if (!content && !hasFile) {
     return <div className="ax-artifact-viewer ax-artifact-empty">내용 없음</div>;
   }
 
@@ -50,11 +89,37 @@ export function ArtifactViewer({ artifact }: Props) {
   if (effectiveMime.startsWith("image/")) {
     return (
       <div className="ax-artifact-viewer">
-        <img
-          src={getArtifactFileUrl(id)}
-          alt={artifact.title}
-          className="ax-artifact-image"
-        />
+        {fileError ? (
+          <p className="ax-form-error">{fileError}</p>
+        ) : objectUrl ? (
+          <img
+            src={objectUrl}
+            alt={artifact.title}
+            className="ax-artifact-image"
+          />
+        ) : (
+          <div className="ax-artifact-empty">이미지 미리보기를 불러오는 중입니다...</div>
+        )}
+      </div>
+    );
+  }
+
+  // PDF - render in sandboxed iframe from blob URL so custom auth headers work.
+  if (effectiveMime === "application/pdf") {
+    return (
+      <div className="ax-artifact-viewer">
+        {fileError ? (
+          <p className="ax-form-error">{fileError}</p>
+        ) : objectUrl ? (
+          <iframe
+            src={objectUrl}
+            sandbox="allow-same-origin"
+            className="ax-artifact-iframe"
+            title={artifact.title}
+          />
+        ) : (
+          <div className="ax-artifact-empty">PDF 미리보기를 불러오는 중입니다...</div>
+        )}
       </div>
     );
   }
@@ -64,7 +129,7 @@ export function ArtifactViewer({ artifact }: Props) {
     return (
       <div className="ax-artifact-viewer">
         <iframe
-          srcDoc={content}
+          {...(content ? { srcDoc: content } : { src: objectUrl })}
           sandbox="allow-same-origin"
           className="ax-artifact-iframe"
           title={artifact.title}
@@ -113,11 +178,20 @@ export function ArtifactViewer({ artifact }: Props) {
   return (
     <div className="ax-artifact-viewer ax-artifact-unsupported">
       <p>지원되지 않는 형식: {effectiveMime}</p>
-      {artifact.file_path && (
-        <a href={getArtifactFileUrl(id)} download className="ax-btn ax-btn-ghost ax-btn-sm">
+      {hasFile && (
+        <button
+          type="button"
+          className="ax-btn ax-btn-ghost ax-btn-sm"
+          onClick={() => {
+            setDownloadError("");
+            void downloadArtifactFile(id, artifact.original_filename || artifact.title || id)
+              .catch((error) => setDownloadError(getApiErrorMessage(error, "파일을 다운로드하지 못했습니다.")));
+          }}
+        >
           파일 다운로드
-        </a>
+        </button>
       )}
+      {downloadError && <p className="ax-form-error">{downloadError}</p>}
     </div>
   );
 }

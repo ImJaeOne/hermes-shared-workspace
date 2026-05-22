@@ -106,6 +106,11 @@ export interface Artifact {
   file_path: string;
   file_size: number;
   mime_type: string;
+  storage_backend?: string;
+  storage_key?: string;
+  original_filename?: string;
+  version?: number;
+  is_latest?: number;
   created_at: string;
   updated_at: string;
   created_by_user_id?: string | null;

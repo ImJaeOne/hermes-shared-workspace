@@ -1,6 +1,7 @@
 """Quick integration test for plugin_api.py — runs without a live server."""
 import importlib
 import os
+import sqlite3
 import sys
 import tempfile
 
@@ -17,6 +18,7 @@ os.environ["HERMES_AX_BOOTSTRAP_ADMIN_DISPLAY_NAME"] = "테스트 관리자"
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import db_schema
 import plugin_api
 importlib.reload(plugin_api)
 
@@ -140,6 +142,35 @@ check("2 transitions", len(detail["transitions"]) == 2)
 transition_log = next((log for log in detail.get("activity_logs", []) if log.get("action") == "workflow.transition"), None)
 check("workflow.transition activity exists", transition_log is not None, str(detail.get("activity_logs")))
 
+print("\n=== Artifact schema migration ===")
+migration_conn = sqlite3.connect(":memory:")
+migration_conn.row_factory = sqlite3.Row
+migration_conn.execute("""CREATE TABLE artifacts (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    stage_id TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT 'text/markdown',
+    status TEXT NOT NULL DEFAULT 'draft',
+    file_path TEXT NOT NULL DEFAULT '',
+    file_size INTEGER NOT NULL DEFAULT 0,
+    mime_type TEXT NOT NULL DEFAULT 'text/markdown',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)""")
+migration_conn.execute("INSERT INTO artifacts (id, workflow_id, stage_id, artifact_type, title, file_path, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                       ("art_old", "wi_old", "stg_old", "report", "Old", "wi_old/stg_old/art_old.md", "2025-01-01T00:00:00Z", "2025-01-01T00:00:00Z"))
+migration_conn.execute("PRAGMA user_version = 4")
+db_schema._run_migrations(migration_conn)
+migration_row = migration_conn.execute("SELECT * FROM artifacts WHERE id='art_old'").fetchone()
+check("schema v5 migration sets user_version", migration_conn.execute("PRAGMA user_version").fetchone()[0] >= 5)
+check("schema v5 backfills storage backend", migration_row["storage_backend"] == "local", dict(migration_row))
+check("schema v5 backfills storage key", migration_row["storage_key"] == "wi_old/stg_old/art_old.md", dict(migration_row))
+check("schema v5 backfills version/latest", migration_row["version"] == 1 and migration_row["is_latest"] == 1, dict(migration_row))
+migration_conn.close()
+
 print("\n=== Artifacts ===")
 r = client.post("/artifacts", json={
     "workflow_id": wf_id,
@@ -158,6 +189,33 @@ check("GET /artifacts/:id status", r.status_code == 200)
 art = r.json()
 check("artifact title matches", art["title"] == "테스트전자 전달 자료 목록")
 check("artifact has empty comments", len(art["comments"]) == 0)
+check("artifact storage metadata present", art.get("storage_backend") == "local" and art.get("storage_key") == art.get("file_path"), str(art))
+check("artifact version starts latest", art.get("version") == 1 and art.get("is_latest") == 1, str(art))
+
+r = client.get(f"/artifacts/{art_id}/file")
+check("GET /artifacts/:id/file status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+check("artifact file content returned", "Slack #테스트전자" in r.text, r.text)
+
+r = client.post("/artifacts/upload", data={
+    "workflow_id": wf_id,
+    "stage_id": "p_material_waiting",
+    "artifact_type": "source_material",
+    "title": "테스트전자 전달 자료 v2",
+    "status": "draft",
+}, files={"file": ("latest-source.txt", b"latest source material", "text/plain")})
+check("POST /artifacts/upload versioned status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+uploaded = r.json()
+second_art_id = uploaded.get("id")
+check("upload response keeps compatible fields", uploaded.get("file_path") and uploaded.get("file_size") == len(b"latest source material") and uploaded.get("mime_type") == "text/plain", str(uploaded))
+r = client.get(f"/artifacts/{second_art_id}")
+second_art = r.json()
+check("upload stores original filename", second_art.get("original_filename") == "latest-source.txt", str(second_art))
+check("upload increments version and latest", second_art.get("version") == 2 and second_art.get("is_latest") == 1, str(second_art))
+r = client.get(f"/artifacts/{art_id}")
+first_art_after_upload = r.json()
+check("prior artifact no longer latest", first_art_after_upload.get("is_latest") == 0, str(first_art_after_upload))
+r = client.get(f"/artifacts/{second_art_id}/file")
+check("uploaded artifact file returned", r.status_code == 200 and r.content == b"latest source material", f"got {r.status_code}: {r.content!r}")
 
 r = client.patch(f"/artifacts/{art_id}", json={"status": "final"})
 check("PATCH artifact status", r.status_code == 200)
