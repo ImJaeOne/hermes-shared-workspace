@@ -9,7 +9,7 @@ SEED_DATA: dict[str, Any] = {
         {
             "id": "planning",
             "name": "Planning Agent",
-            "description": "기획 파이프라인 — 리서치부터 최종 브리핑까지",
+            "description": "기획 자료조사 MVP — Slack 회사 채널 자료 확인부터 조사 결과 확정까지",
             "icon": "ClipboardList",
             "color": "#3b82f6",
         },
@@ -22,43 +22,59 @@ SEED_DATA: dict[str, Any] = {
         },
     ],
     "templates": [
-        {"id": "planning_pipeline_v1", "agent_type_id": "planning", "name": "Planning Pipeline v1"},
+        {"id": "planning_research_mvp_v1", "agent_type_id": "planning", "name": "Planning Research MVP v1"},
         {"id": "design_pipeline_v1", "agent_type_id": "design", "name": "Design Pipeline v1"},
     ],
     "stages": [
         {
-            "id": "p_discovery",
-            "template_id": "planning_pipeline_v1",
-            "name": "Discovery",
-            "slug": "discovery",
+            "id": "p_material_requesting",
+            "template_id": "planning_research_mvp_v1",
+            "name": "자료 요청 중",
+            "slug": "material-requesting",
             "stage_order": 0,
-            "expected_artifacts": '["brief","meeting_notes"]',
+            "expected_artifacts": '["source_material"]',
         },
         {
-            "id": "p_brief",
-            "template_id": "planning_pipeline_v1",
-            "name": "Brief Draft",
-            "slug": "brief-draft",
+            "id": "p_material_waiting",
+            "template_id": "planning_research_mvp_v1",
+            "name": "자료 확인 대기",
+            "slug": "material-waiting",
             "stage_order": 1,
-            "expected_artifacts": '["brief"]',
+            "expected_artifacts": '["source_material"]',
         },
         {
-            "id": "p_review",
-            "template_id": "planning_pipeline_v1",
-            "name": "Stakeholder Review",
-            "slug": "review",
+            "id": "p_research_running",
+            "template_id": "planning_research_mvp_v1",
+            "name": "자료조사 실행 중",
+            "slug": "research-running",
             "stage_order": 2,
-            "expected_artifacts": '["meeting_notes","email"]',
-            "transition_mode": "approval_required",
-            "approval_roles": '["manager"]',
+            "expected_artifacts": '["source_material","research_report"]',
         },
         {
-            "id": "p_handoff",
-            "template_id": "planning_pipeline_v1",
-            "name": "Handoff",
-            "slug": "handoff",
+            "id": "p_user_review_waiting",
+            "template_id": "planning_research_mvp_v1",
+            "name": "사용자 검토 대기",
+            "slug": "user-review-waiting",
             "stage_order": 3,
-            "expected_artifacts": '["report"]',
+            "expected_artifacts": '["research_report"]',
+        },
+        {
+            "id": "p_revision_running",
+            "template_id": "planning_research_mvp_v1",
+            "name": "수정 요청 처리 중",
+            "slug": "revision-running",
+            "stage_order": 4,
+            "expected_artifacts": '["research_report"]',
+        },
+        {
+            "id": "p_research_confirmed",
+            "template_id": "planning_research_mvp_v1",
+            "name": "자료조사 확정",
+            "slug": "research-confirmed",
+            "stage_order": 5,
+            "expected_artifacts": '["research_report"]',
+            "transition_mode": "approval_required",
+            "approval_roles": '["human_user","planning_lead"]',
         },
         {
             "id": "d_research",
@@ -98,16 +114,16 @@ SEED_DATA: dict[str, Any] = {
     "skills": [
         {
             "id": "skill_001",
-            "name": "기획 브리프 작성",
-            "description": "리서치 내용을 바탕으로 기획 브리프를 정리합니다.",
-            "content": "# 기획 브리프 작성\n\n## 목적\n리서치 결과를 구조화하여 이해관계자와 공유할 수 있는 기획 브리프를 작성합니다.\n\n## 입력\n- 프로젝트 목표\n- 사용자/시장 인사이트\n- 제약사항\n- 참고 자료\n\n## 출력 형식\n- 요약\n- 핵심 문제\n- 제안 방향\n- 다음 단계\n\n## 작성 원칙\n- 문장은 짧고 명확하게\n- 의사결정에 필요한 정보만 남기기\n- 액션 아이템은 담당자와 기한을 포함하기",
+            "name": "기획 자료조사 결과 정리",
+            "description": "회사 채널 자료와 외부 조사를 바탕으로 자료조사 결과를 정리합니다.",
+            "content": "# 기획 자료조사 결과 정리\n\n## 목적\nSlack 회사 채널에 첨부된 자료와 보완 조사를 구조화하여 회사 담당자가 검토할 수 있는 자료조사 결과를 작성합니다.\n\n## 입력\n- 사용자가 첨부한 파일/링크/설명\n- 회사/제품/시장 관련 공개 자료\n- 기획팀 임팀장의 확인 메모\n\n## 출력 형식\n- 핵심 요약\n- 회사/제품 이해\n- 시장·고객 맥락\n- 콘텐츠 기획에 쓸 수 있는 포인트\n- 추가 확인이 필요한 질문\n\n## 작성 원칙\n- 확인된 사실과 추정을 구분하기\n- 출처가 있는 항목은 자료명을 남기기\n- 시놉시스/스토리보드/원고는 후속 placeholder로만 언급하기",
             "agent_type_id": "planning",
         },
         {
             "id": "skill_002",
-            "name": "스테이크홀더 미팅 노트 정리",
-            "description": "회의 내용을 기획 관점으로 정리합니다.",
-            "content": "# 스테이크홀더 미팅 노트 정리\n\n## 목적\n회의에서 나온 의견, 결정 사항, 후속 액션을 정리합니다.\n\n## 구조\n1. 회의 정보\n2. 핵심 논의 사항\n3. 결정 사항\n4. 액션 아이템\n5. 후속 일정\n\n## 작성 규칙\n- 발언보다 결정과 합의에 집중\n- 액션은 체크리스트로 명시\n- 다음 단계가 분명해야 함",
+            "name": "Slack 회사 채널 자료 확인",
+            "description": "회사 채널에 전달된 파일 목록과 추가 필요 자료를 확인합니다.",
+            "content": "# Slack 회사 채널 자료 확인\n\n## 목적\n`#회사명` Slack 채널에서 사용자가 전달한 자료를 확인하고 자료조사 실행 가능 여부를 판단합니다.\n\n## 확인 항목\n1. 회사명과 프로젝트명 매핑\n2. 첨부 파일/링크/설명 목록\n3. 열람 권한과 누락 자료\n4. 자료조사 worker에게 전달할 실행 메모\n\n## 작성 규칙\n- 사용자에게 보이는 용어는 회사 프로젝트, 자료, 자료조사 결과로 정리\n- 부족한 자료는 기획팀 임팀장이 요청할 수 있게 질문 형태로 남기기\n- 실행 가능 상태가 되면 담당자를 기획팀 임사원으로 넘기기",
             "agent_type_id": "planning",
         },
         {
@@ -178,10 +194,26 @@ def seed_if_empty(conn: sqlite3.Connection, now_fn: Callable[[], str], emit_even
 
 
 def seed_sample_data(conn: sqlite3.Connection, now: str, emit_event: Callable[..., None]):
-    def _ins_wf(wid, tmpl, agent, title, stage, status, priority, assignee):
+    def _planning_metadata(company_name: str, channel_id: str) -> str:
+        return json.dumps(
+            {
+                "company_name": company_name,
+                "project_key": f"planning-research:{company_name}",
+                "source": "slack",
+                "slack": {
+                    "channel_name": company_name,
+                    "channel_id": channel_id,
+                },
+                "mvp_scope": "research_only",
+                "future_placeholders": ["synopsis", "storyboard", "script"],
+            },
+            ensure_ascii=False,
+        )
+
+    def _ins_wf(wid, tmpl, agent, title, stage, status, priority, assignee, metadata_json="{}"):
         conn.execute(
             "INSERT INTO workflow_instances (id,template_id,agent_type_id,title,current_stage_id,status,priority,assignee,metadata_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (wid, tmpl, agent, title, stage, status, priority, assignee, "{}", now, now),
+            (wid, tmpl, agent, title, stage, status, priority, assignee, metadata_json, now, now),
         )
         conn.execute(
             "INSERT INTO stage_transitions (workflow_id,from_stage_id,to_stage_id,triggered_by,note,created_at) VALUES (?,?,?,?,?,?)",
@@ -202,50 +234,104 @@ def seed_sample_data(conn: sqlite3.Connection, now: str, emit_event: Callable[..
             (aid, author, body, now, now),
         )
 
-    _ins_wf("wi_plan_001", "planning_pipeline_v1", "planning", "Q4 제품 로드맵 정리", "p_review", "active", 1, "김기획")
+    _ins_wf(
+        "wi_plan_001",
+        "planning_research_mvp_v1",
+        "planning",
+        "[덕우전자] 기획 자료조사",
+        "p_user_review_waiting",
+        "active",
+        1,
+        "회사 담당자 확인 대기",
+        _planning_metadata("덕우전자", "C025DUKWOO"),
+    )
     _ins_art(
         "art_p001",
         "wi_plan_001",
-        "p_discovery",
-        "brief",
-        "리서치 인사이트 초안",
-        "## 리서치 요약\n\n- 사용자 인터뷰 8건 완료\n- 주요 요구: 빠른 검토 흐름과 명확한 우선순위\n- 개선 포인트: 승인 단계의 맥락 부족\n\n## 다음 단계\n- 이해관계자별 우선순위 정리\n- 브리프 초안 작성",
+        "p_material_waiting",
+        "source_material",
+        "덕우전자 전달 자료 목록",
+        "## Slack #덕우전자 전달 자료\n\n- `덕우전자_회사소개서_2026.pdf`\n- `제품군_요약_카메라모듈_부품.xlsx`\n- 기존 홍보 영상 링크 2건\n- 담당자 메모: 자동차 전장 부품과 스마트폰 부품을 함께 다루되 최근 전장 비중을 강조\n\n## 추가자료 확인\n- 해외 매출 비중 표 열람 권한 확인 완료\n- 수상/인증 자료는 공개 자료로 보완 조사 예정\n\n## 다음 처리\n기획팀 임팀장이 자료 목록을 확인했고, 기획팀 임사원이 자료조사 결과 초안을 작성했습니다.",
         "text/markdown",
         "final",
     )
-    _ins_comment("art_p001", "김기획", "핵심 문제는 승인 기준이 모호하다는 점입니다. 리뷰 단계에서 정리하겠습니다.")
+    _ins_comment("art_p001", "덕우전자 담당자", "첨부한 제품군 요약 파일의 전장 부품 탭을 우선 참고해주세요.")
     _ins_art(
         "art_p002",
         "wi_plan_001",
-        "p_brief",
-        "brief",
-        "Q4 기획 브리프",
-        "## Q4 기획 브리프\n\n### 목표\n- 승인 대기 시간을 줄이고 협업 맥락을 명확히 한다.\n\n### 범위\n- 기획 브리프 템플릿 정리\n- 의사결정 기준 명시\n- 디자인 팀 인수인계 포인트 정리",
+        "p_user_review_waiting",
+        "research_report",
+        "덕우전자 자료조사 결과 초안",
+        "## 덕우전자 자료조사 결과 초안\n\n### 핵심 요약\n- 덕우전자는 전자부품 제조 기반을 바탕으로 모바일·자동차 전장 부품을 공급하는 회사입니다.\n- 최근 콘텐츠에서는 정밀 제조 역량, 품질 관리, 전장 분야 확장성을 함께 보여주는 방향이 적합합니다.\n\n### 콘텐츠 기획 포인트\n1. 회사 신뢰도: 주요 생산 역량과 품질 인증을 시각 자료로 정리\n2. 제품 이해: 스마트폰 부품과 전장 부품을 구분해 적용 사례 중심으로 설명\n3. 미래 방향: 전장 부품 비중 확대와 고객사 요구 대응력을 강조\n\n### 사용자 확인 필요\n- 전장 부품 매출 비중을 공개 가능한 범위로 표현해도 되는지 확인 필요\n- 대표 제품 이미지는 첨부 자료 기준 사용 가능 여부 확인 필요\n\n### 후속 placeholder\n시놉시스, 스토리보드, 원고는 자료조사 확정 후 후속 단계에서 preview로 다룹니다.",
         "text/markdown",
         "draft",
     )
-    _ins_art(
-        "art_p003",
-        "wi_plan_001",
-        "p_review",
-        "meeting_notes",
-        "스테이크홀더 리뷰 노트",
-        "## 리뷰 회의 (2026-05-18)\n\n**참석자**: 김기획, 박디자이너, 제품팀 리더\n\n### 결정 사항\n- 브리프는 3가지 핵심 질문으로 축약\n- 디자인 핸드오프에 필요한 체크리스트 추가\n\n### 액션 아이템\n- [ ] 브리프 초안 재정리\n- [ ] 디자인 팀 의견 반영\n- [ ] 다음 회의 전 공유",
-        "text/markdown",
-        "final",
+    _ins_comment("art_p002", "덕우전자 담당자", "스마트폰 부품보다 전장 부품 확장 흐름이 더 잘 보이도록 요약 순서를 바꿔주세요.")
+
+    _ins_wf(
+        "wi_plan_002",
+        "planning_research_mvp_v1",
+        "planning",
+        "[한빛식품] 기획 자료조사",
+        "p_research_running",
+        "active",
+        2,
+        "기획팀 임사원",
+        _planning_metadata("한빛식품", "C026HANBIT"),
     )
-    _ins_comment("art_p003", "제품팀 리더", "기획안이 훨씬 명확해졌습니다. 승인 기준을 한 페이지로 정리해주세요.")
-    _ins_wf("wi_plan_002", "planning_pipeline_v1", "planning", "신규 기능 우선순위 워크숍", "p_handoff", "completed", 0, "이기획")
     _ins_art(
         "art_p010",
         "wi_plan_002",
-        "p_handoff",
-        "report",
-        "우선순위 정리 결과",
-        "## 우선순위 정리 결과\n\n- 상위 과제 3건 확정\n- 분기별 로드맵 초안 공유 완료\n- 디자인 리소스 요청 범위 합의",
+        "p_material_waiting",
+        "source_material",
+        "한빛식품 전달 자료 목록",
+        "## Slack #한빛식품 전달 자료\n\n- 브랜드 소개서 PDF\n- 신제품 패키지 이미지 6종\n- 온라인몰 상세페이지 링크\n- 담당자 요청: 건강 간편식 카테고리에서 차별화 포인트 조사\n\n## 추가자료 확인\n- 원재료 원산지 표기는 공개 범위 확인 대기\n- 경쟁 제품 가격대는 worker가 공개 자료로 보완 조사",
         "text/markdown",
         "final",
     )
+    _ins_art(
+        "art_p011",
+        "wi_plan_002",
+        "p_research_running",
+        "research_report",
+        "한빛식품 자료조사 실행 메모",
+        "## 실행 중 메모\n\n기획팀 임사원이 전달 자료와 공개 자료를 함께 확인 중입니다.\n\n- 브랜드 톤: 건강함, 간편함, 가족 식탁\n- 우선 조사: 간편식 시장 트렌드, 경쟁 제품 메시지, 온라인몰 리뷰 키워드\n- 결과 전달 예정: 핵심 요약과 콘텐츠 기획 포인트 중심 초안",
+        "text/markdown",
+        "draft",
+    )
+
+    _ins_wf(
+        "wi_plan_003",
+        "planning_research_mvp_v1",
+        "planning",
+        "[에코모빌리티] 기획 자료조사",
+        "p_research_confirmed",
+        "completed",
+        0,
+        "기획팀 임팀장",
+        _planning_metadata("에코모빌리티", "C027ECOMOB"),
+    )
+    _ins_art(
+        "art_p020",
+        "wi_plan_003",
+        "p_material_waiting",
+        "source_material",
+        "에코모빌리티 전달 자료 목록",
+        "## Slack #에코모빌리티 전달 자료\n\n- 기업 소개서\n- 전기 배송차 제품 브로슈어\n- 충전 인프라 구축 사례 링크\n\n자료 확인 후 자료조사 worker에게 전달 완료했습니다.",
+        "text/markdown",
+        "final",
+    )
+    _ins_art(
+        "art_p021",
+        "wi_plan_003",
+        "p_research_confirmed",
+        "research_report",
+        "에코모빌리티 자료조사 최종본",
+        "## 에코모빌리티 자료조사 최종본\n\n### 핵심 요약\n- 전기 배송차와 충전 인프라 운영 경험을 함께 제시하는 것이 회사 신뢰도를 높입니다.\n- B2B 고객에게는 총소유비용 절감, 운영 안정성, ESG 대응 메시지가 중요합니다.\n\n### 확정된 기획 포인트\n1. 실제 배송 운영 사례를 중심으로 제품 효용 설명\n2. 충전 인프라 구축 경험을 별도 신뢰 요소로 배치\n3. 후속 시놉시스/스토리보드/원고에서는 ESG와 비용 절감 메시지를 preview로 확장\n\n사용자 확인을 거쳐 자료조사 단계가 확정되었습니다.",
+        "text/markdown",
+        "final",
+    )
+    _ins_comment("art_p021", "에코모빌리티 담당자", "최종본 내용으로 확정합니다. 후속 시놉시스 preview에서 ESG 메시지를 유지해주세요.")
 
     _ins_wf("wi_des_001", "design_pipeline_v1", "design", "모바일 앱 홈 개편", "d_review", "active", 2, "박디자이너")
     _ins_art(

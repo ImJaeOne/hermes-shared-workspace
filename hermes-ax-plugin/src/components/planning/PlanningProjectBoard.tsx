@@ -298,13 +298,24 @@ function ArtifactRow({ artifact, stages }: { artifact: Artifact; stages: StageDe
 }
 
 function getPlanningStageLabel(stageName: string, status?: string): string {
+  const label = stageName.trim();
+  const normalized = label.toLowerCase();
+  const isWorkflowStatusLabel = Boolean(status);
+
+  if (label.includes("자료 요청") || normalized.includes("material-requesting")) return "자료 요청 중";
+  if (label.includes("자료 확인") || normalized.includes("material-waiting")) return "자료 확인 대기";
+  if (label.includes("자료조사 실행") || normalized.includes("research-running")) return "자료조사 실행 중";
+  if (label.includes("사용자 검토") || normalized.includes("user-review-waiting")) return "사용자 검토 대기";
+  if (label.includes("수정 요청") || normalized.includes("revision-running")) return "수정 요청 처리 중";
+  if (label.includes("자료조사 확정") || normalized.includes("research-confirmed")) return "자료조사 확정";
+  if (normalized.includes("source_material")) return "전달 자료";
+  if (normalized.includes("research_report")) return "자료조사 결과";
+
   if (status === "completed") return "기획 자료 정리 완료";
   if (status === "pending_approval") return "검토 대기";
   if (status === "paused") return "일시정지";
   if (status === "failed") return "확인 필요";
 
-  const normalized = stageName.toLowerCase();
-  const isWorkflowStatusLabel = Boolean(status);
   if (normalized.includes("research") || normalized.includes("자료") || normalized.includes("조사")) {
     return isWorkflowStatusLabel ? "자료조사 진행 중" : "자료조사";
   }
@@ -312,7 +323,7 @@ function getPlanningStageLabel(stageName: string, status?: string): string {
   if (normalized.includes("storyboard") || normalized.includes("스토리")) return isWorkflowStatusLabel ? "스토리보드 준비" : "스토리보드";
   if (normalized.includes("script") || normalized.includes("원고")) return isWorkflowStatusLabel ? "원고 준비" : "원고";
   if (normalized.includes("done") || normalized.includes("완료")) return "기획 자료 정리 완료";
-  return stageName || "자료조사 진행 중";
+  return label || "자료조사 진행 중";
 }
 
 function formatStageStatus(stage: { is_completed?: boolean; is_current?: boolean }): string {
