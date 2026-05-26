@@ -26,6 +26,9 @@ RUN git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/he
     && npm ci \
     && npm run build
 
+COPY scripts/patch_hermes_dashboard_public_api.py /tmp/patch_hermes_dashboard_public_api.py
+RUN /opt/hermes-agent/venv/bin/python3 /tmp/patch_hermes_dashboard_public_api.py
+
 COPY . /opt/hermes-ax-plugin
 
 RUN cd /opt/hermes-ax-plugin \

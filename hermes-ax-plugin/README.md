@@ -229,6 +229,20 @@ http://127.0.0.1:9120/ax
 
 Railway에서는 서비스 Root Directory를 `hermes-ax-plugin`으로 두고, Railway Volume을 `/data`에 마운트한 뒤 `HERMES_HOME=/data/.hermes`, `RUN_MODE=both` 또는 `dashboard`, Slack 관련 secret 환경변수를 설정합니다. 운영에서는 `HERMES_AX_SLACK_DRY_RUN`, `HERMES_AX_SLACK_ALLOW_UNSIGNED_EVENTS`를 끕니다.
 
+Slack Events API는 Slack이 `X-Hermes-Session-Token` 같은 Dashboard 브라우저 세션 토큰을 보낼 수 없기 때문에 공개 webhook endpoint로 열려야 합니다. Docker 이미지는 빌드 시 Hermes Dashboard의 public API allowlist에 아래 exact path 하나만 추가합니다.
+
+```text
+/api/plugins/hermes-ax/slack/events
+```
+
+이 경로가 public으로 열리더라도 플러그인 라우터 내부에서 Slack signing secret을 먼저 검증합니다. 운영 배포에서 Slack URL Verification이 `Your URL didn't respond with the value of the challenge parameter.`로 실패하고 응답이 `{"detail":"Unauthorized"}`라면, 아직 이 이미지 패치가 배포되지 않았거나 production이 PR 반영 전 브랜치를 실행 중인 상태일 가능성이 큽니다.
+
+Slack App의 Request URL은 trailing slash 없이 아래처럼 설정합니다.
+
+```text
+https://<railway-domain>/api/plugins/hermes-ax/slack/events
+```
+
 ## Development
 
 ### 프론트엔드 빌드
