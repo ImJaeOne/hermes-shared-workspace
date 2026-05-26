@@ -18,12 +18,14 @@ from fastapi import APIRouter, HTTPException, Request
 
 try:
     from .activity import _record_activity
+    from .artifact_storage import get_artifact_storage
     from .common import _now, _uuid
     from .db import get_db
     from .events import _emit_event
     from .rows import row_to_dict
 except ImportError:
     from activity import _record_activity
+    from artifact_storage import get_artifact_storage
     from common import _now, _uuid
     from db import get_db
     from events import _emit_event
@@ -33,7 +35,25 @@ router = APIRouter()
 
 PLANNING_TEMPLATE_ID = "planning_research_mvp_v1"
 PLANNING_ASSIGNEE = "기획팀 임팀장"
+PLANNING_WORKER_ASSIGNEE = "기획팀 임사원"
+SLACK_DEFAULT_MAX_FILES_PER_MESSAGE = 10
+SLACK_DEFAULT_MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
 SUPPORTED_CHANNEL_EVENTS = {"channel_created", "channel_joined", "channel_rename", "member_joined_channel"}
+SUPPORTED_SLACK_FILE_EXTENSIONS = {"pdf", "txt", "md", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "png", "jpg", "jpeg"}
+SUPPORTED_SLACK_FILE_MIMES = {
+    "application/pdf",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "image/png",
+    "image/jpeg",
+}
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -41,6 +61,39 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _slack_max_files_per_message() -> int:
+    return _env_int("HERMES_AX_SLACK_MAX_FILES_PER_MESSAGE", SLACK_DEFAULT_MAX_FILES_PER_MESSAGE)
+
+
+def _slack_max_file_size_bytes() -> int:
+    return _env_int("HERMES_AX_SLACK_MAX_FILE_SIZE_BYTES", SLACK_DEFAULT_MAX_FILE_SIZE_BYTES)
+
+
+def _format_file_size_limit(size_bytes: int) -> str:
+    if size_bytes % (1024 * 1024) == 0:
+        return f"{size_bytes // (1024 * 1024)}MB"
+    return f"{size_bytes} bytes"
+
+
+def _slack_material_upload_guide() -> str:
+    return (
+        "지원 형식: pdf, txt/md, doc/docx, ppt/pptx, xls/xlsx, csv, png/jpg/jpeg · "
+        f"한 번에 최대 {_slack_max_files_per_message()}개 · "
+        f"파일당 최대 {_format_file_size_limit(_slack_max_file_size_bytes())}"
+    )
 
 
 def _slack_signing_secret() -> str:
@@ -381,7 +434,7 @@ def _ensure_mapping(
     return mapping, True, workflow_created
 
 
-def _post_onboarding_message(channel_id: str, message: str) -> dict[str, Any]:
+def _post_slack_message(channel_id: str, message: str) -> dict[str, Any]:
     if _env_bool("HERMES_AX_SLACK_DRY_RUN"):
         return {"sent": True, "ts": f"dry-run-{int(time.time())}", "dry_run": True}
 
@@ -409,6 +462,10 @@ def _post_onboarding_message(channel_id: str, message: str) -> dict[str, Any]:
     if not data.get("ok"):
         return {"sent": False, "reason": "slack_api_rejected", "error": str(data.get("error") or "unknown_error")}
     return {"sent": True, "ts": str(data.get("ts") or "")}
+
+
+def _post_onboarding_message(channel_id: str, message: str) -> dict[str, Any]:
+    return _post_slack_message(channel_id, message)
 
 
 def _maybe_send_onboarding_message(conn: sqlite3.Connection, mapping: sqlite3.Row) -> dict[str, Any]:
@@ -457,6 +514,480 @@ def _maybe_send_onboarding_message(conn: sqlite3.Connection, mapping: sqlite3.Ro
         },
     )
     return {"message_sent": False, "message_skipped_reason": send_result.get("reason") or "send_failed"}
+
+
+def _slack_file_extension(file_info: dict[str, Any]) -> str:
+    name = str(file_info.get("name") or file_info.get("title") or "")
+    if "." in name:
+        return name.rsplit(".", 1)[-1].lower()
+    return str(file_info.get("filetype") or "").strip().lower()
+
+
+def _slack_file_supported(file_info: dict[str, Any]) -> tuple[bool, str]:
+    size = int(file_info.get("size") or 0)
+    max_size = _slack_max_file_size_bytes()
+    if size > max_size:
+        return False, f"file_too_large:{size}>{max_size}"
+
+    mimetype = str(file_info.get("mimetype") or file_info.get("mime_type") or "").strip().lower()
+    ext = _slack_file_extension(file_info)
+    if ext in SUPPORTED_SLACK_FILE_EXTENSIONS or mimetype in SUPPORTED_SLACK_FILE_MIMES:
+        return True, ""
+    return False, f"unsupported_file_type:{mimetype or ext or 'unknown'}"
+
+
+def _slack_file_content_bytes(file_info: dict[str, Any]) -> bytes | None:
+    if "content_text" in file_info:
+        return str(file_info.get("content_text") or "").encode("utf-8")
+    if "content" in file_info:
+        content = file_info.get("content")
+        if isinstance(content, str):
+            return content.encode("utf-8")
+        if isinstance(content, bytes):
+            return content
+    url = str(file_info.get("url_private_download") or file_info.get("url_private") or "").strip()
+    return _download_slack_file_bytes(url) if url else None
+
+
+def _download_slack_file_bytes(url: str) -> bytes | None:
+    """Future-compatible Slack file downloader; disabled unless explicitly opted in."""
+    if not _env_bool("HERMES_AX_SLACK_DOWNLOAD_FILES"):
+        return None
+    token = _slack_bot_token()
+    if not token:
+        return None
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    timeout = float(os.getenv("HERMES_AX_SLACK_API_TIMEOUT_SECONDS", "2"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.read()
+    except (urllib.error.URLError, TimeoutError):
+        return None
+
+
+def _slack_file_manifest(file_info: dict[str, Any], *, reason: str = "metadata_manifest") -> str:
+    safe_metadata = {k: v for k, v in file_info.items() if k not in {"content", "content_text"}}
+    return "Slack file metadata manifest\n" + json.dumps({"reason": reason, "file": safe_metadata}, ensure_ascii=False, indent=2)
+
+
+def _slack_file_metadata_json(file_info: dict[str, Any], *, reason: str = "slack_file_metadata") -> str:
+    safe_metadata = {k: v for k, v in file_info.items() if k not in {"content", "content_text"}}
+    return json.dumps({"reason": reason, "file": safe_metadata}, ensure_ascii=False)
+
+
+def _source_material_stage_id(conn: sqlite3.Connection, workflow_id: str) -> str:
+    stage = conn.execute(
+        """SELECT s.id FROM workflow_instances w
+           JOIN stage_definitions s ON s.template_id=w.template_id
+           WHERE w.id=? AND s.id='p_material_waiting'
+           LIMIT 1""",
+        (workflow_id,),
+    ).fetchone()
+    if stage:
+        return stage["id"]
+    wf = conn.execute("SELECT current_stage_id FROM workflow_instances WHERE id=?", (workflow_id,)).fetchone()
+    return wf["current_stage_id"] if wf else "p_material_waiting"
+
+
+def _create_slack_source_artifact(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    stage_id: str,
+    file_info: dict[str, Any],
+    filename: str,
+    title: str,
+    mimetype: str,
+) -> str:
+    art_id = _uuid("art_")
+    content_bytes = _slack_file_content_bytes(file_info)
+    manifest = _slack_file_manifest(file_info)
+    if content_bytes is None:
+        content_bytes = manifest.encode("utf-8")
+        if not mimetype:
+            mimetype = "text/plain"
+    stored = get_artifact_storage().write_bytes(
+        workflow_id=workflow_id,
+        stage_id=stage_id,
+        artifact_id=art_id,
+        content=content_bytes,
+        mime_type=mimetype or "application/octet-stream",
+        original_filename=filename,
+    )
+    content_text = ""
+    if (mimetype or "").startswith("text/") or (mimetype or "") in {"application/json", "text/markdown"}:
+        try:
+            content_text = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            content_text = ""
+    elif content_bytes == manifest.encode("utf-8"):
+        content_text = manifest
+
+    version_row = conn.execute(
+        """SELECT COALESCE(MAX(version), 0) AS max_version
+           FROM artifacts WHERE workflow_id=? AND stage_id=? AND artifact_type=?""",
+        (workflow_id, stage_id, "source_material"),
+    ).fetchone()
+    version = int(version_row["max_version"] or 0) + 1
+    now = _now()
+    conn.execute(
+        """INSERT INTO artifacts
+           (id, workflow_id, stage_id, artifact_type, title, content, content_type, status,
+            file_path, file_size, mime_type, storage_backend, storage_key, original_filename,
+            version, is_latest, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            art_id,
+            workflow_id,
+            stage_id,
+            "source_material",
+            title or filename or "Slack 첨부 파일",
+            content_text,
+            mimetype or stored.mime_type,
+            "final",
+            stored.file_path,
+            stored.file_size,
+            stored.mime_type,
+            stored.storage_backend,
+            stored.storage_key,
+            stored.original_filename,
+            version,
+            1,
+            now,
+            now,
+        ),
+    )
+    _emit_event(conn, "artifact_added", workflow_id, art_id)
+    return art_id
+
+
+def _transition_to_material_waiting(conn: sqlite3.Connection, workflow_id: str):
+    wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (workflow_id,)).fetchone()
+    if not wf or wf["current_stage_id"] == "p_material_waiting":
+        return
+    target = conn.execute("SELECT * FROM stage_definitions WHERE template_id=? AND id='p_material_waiting'", (wf["template_id"],)).fetchone()
+    if not target:
+        return
+    current = conn.execute("SELECT stage_order FROM stage_definitions WHERE id=?", (wf["current_stage_id"],)).fetchone()
+    if current and int(current["stage_order"]) > int(target["stage_order"]):
+        return
+    now = _now()
+    conn.execute("UPDATE workflow_instances SET current_stage_id=?, updated_at=? WHERE id=?", (target["id"], now, workflow_id))
+    conn.execute(
+        "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at) VALUES (?,?,?,?,?,?)",
+        (workflow_id, wf["current_stage_id"], target["id"], "slack", "Slack source materials collected", now),
+    )
+    _emit_event(conn, "stage_changed", workflow_id, payload={"from": wf["current_stage_id"], "to": target["id"]})
+
+
+def _transition_to_research_running(conn: sqlite3.Connection, workflow_id: str):
+    wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (workflow_id,)).fetchone()
+    if not wf:
+        return
+    target = conn.execute("SELECT * FROM stage_definitions WHERE template_id=? AND id='p_research_running'", (wf["template_id"],)).fetchone()
+    if not target:
+        return
+    now = _now()
+    if wf["current_stage_id"] == target["id"]:
+        conn.execute("UPDATE workflow_instances SET assignee=?, updated_at=? WHERE id=?", (PLANNING_WORKER_ASSIGNEE, now, workflow_id))
+        return
+    current = conn.execute("SELECT stage_order FROM stage_definitions WHERE id=?", (wf["current_stage_id"],)).fetchone()
+    if current and int(current["stage_order"]) > int(target["stage_order"]):
+        return
+    conn.execute(
+        "UPDATE workflow_instances SET current_stage_id=?, assignee=?, updated_at=? WHERE id=?",
+        (target["id"], PLANNING_WORKER_ASSIGNEE, now, workflow_id),
+    )
+    conn.execute(
+        "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at) VALUES (?,?,?,?,?,?)",
+        (workflow_id, wf["current_stage_id"], target["id"], "slack", "Slack material collection confirmed", now),
+    )
+    _emit_event(conn, "stage_changed", workflow_id, payload={"from": wf["current_stage_id"], "to": target["id"]})
+
+
+def _material_confirmation_message(stored_files: list[dict[str, Any]], rejected_files: list[dict[str, Any]]) -> str:
+    lines = ["첨부된 자료는 다음과 같습니다"]
+    if stored_files:
+        for item in stored_files:
+            lines.append(f"- {item.get('title') or item.get('filename')}")
+    else:
+        lines.append("- 지원되는 첨부 자료가 아직 없습니다.")
+    if rejected_files:
+        lines.append("\n지원하지 않는 파일은 제외되었습니다:")
+        for item in rejected_files:
+            lines.append(f"- {item.get('filename')}: {item.get('rejection_reason')}")
+    lines.append(f"\n{_slack_material_upload_guide()}")
+    lines.append("\n추가 자료는 없으십니까?")
+    return "\n".join(lines)
+
+
+def _material_more_needed_message() -> str:
+    return f"추가 자료가 있으시면 이 채널에 계속 첨부해주세요.\n{_slack_material_upload_guide()}"
+
+
+def _material_confirmed_message() -> str:
+    return "자료 목록 확인이 완료되었습니다. 기획팀 임사원에게 자료조사 worker 실행을 전달했습니다."
+
+
+def _classify_material_reply(text: str) -> str:
+    normalized = re.sub(r"\s+", "", text.strip().lower())
+    if not normalized:
+        return ""
+    if "추가" in normalized and ("있" in normalized or "올리" in normalized or "첨부" in normalized) and "없" not in normalized:
+        return "more_needed"
+    if "없" in normalized or "자료조사worker" in normalized or "전달" in normalized:
+        return "confirmed"
+    return ""
+
+
+def _upsert_material_state(
+    conn: sqlite3.Connection,
+    *,
+    mapping: sqlite3.Row,
+    message: str,
+    send_result: dict[str, Any],
+    status: str = "pending_confirmation",
+) -> None:
+    counts = conn.execute(
+        """SELECT
+              SUM(CASE WHEN status='stored' THEN 1 ELSE 0 END) AS stored_count,
+              SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected_count
+           FROM slack_workflow_source_files WHERE workflow_id=?""",
+        (mapping["workflow_id"],),
+    ).fetchone()
+    now = _now()
+    conn.execute(
+        """INSERT INTO slack_material_collection_states
+           (workflow_id, mapping_id, status, source_file_count, rejected_file_count,
+            last_message, last_message_ts, last_message_sent_at, last_error, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(workflow_id) DO UPDATE SET
+             mapping_id=excluded.mapping_id,
+             status=excluded.status,
+             source_file_count=excluded.source_file_count,
+             rejected_file_count=excluded.rejected_file_count,
+             last_message=excluded.last_message,
+             last_message_ts=excluded.last_message_ts,
+             last_message_sent_at=excluded.last_message_sent_at,
+             last_error=excluded.last_error,
+             updated_at=excluded.updated_at""",
+        (
+            mapping["workflow_id"],
+            mapping["id"],
+            status,
+            int(counts["stored_count"] or 0),
+            int(counts["rejected_count"] or 0),
+            message,
+            send_result.get("ts") or "",
+            now if send_result.get("sent") else None,
+            "" if send_result.get("sent") else (send_result.get("error") or send_result.get("reason") or "send_failed"),
+            now,
+        ),
+    )
+
+
+def _handle_material_text_event(
+    conn: sqlite3.Connection,
+    *,
+    mapping: sqlite3.Row,
+    event: dict[str, Any],
+    event_id: str,
+    team_id: str,
+    channel_id: str,
+) -> dict[str, Any]:
+    state = conn.execute(
+        "SELECT * FROM slack_material_collection_states WHERE workflow_id=?",
+        (mapping["workflow_id"],),
+    ).fetchone()
+    if not state or state["status"] not in {"pending_confirmation", "awaiting_more_materials"}:
+        return {"ok": True, "ignored": True, "reason": "message_without_files", "event_type": "message"}
+
+    intent = _classify_material_reply(str(event.get("text") or ""))
+    if not intent:
+        return {"ok": True, "ignored": True, "reason": "message_without_files", "event_type": "message"}
+
+    if intent == "more_needed":
+        message = _material_more_needed_message()
+        material_status = "awaiting_more_materials"
+        send_result = _post_slack_message(channel_id, message)
+        now = _now()
+        conn.execute(
+            "UPDATE workflow_instances SET current_stage_id='p_material_waiting', assignee=?, updated_at=? WHERE id=? AND current_stage_id='p_material_waiting'",
+            (PLANNING_ASSIGNEE, now, mapping["workflow_id"]),
+        )
+        _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status=material_status)
+        _record_slack_activity(
+            conn,
+            action="slack.material_collection_more_needed",
+            workflow_id=mapping["workflow_id"],
+            target_id=mapping["id"],
+            metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "dry_run": bool(send_result.get("dry_run"))},
+        )
+    else:
+        _transition_to_research_running(conn, mapping["workflow_id"])
+        message = _material_confirmed_message()
+        material_status = "confirmed"
+        send_result = _post_slack_message(channel_id, message)
+        _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status=material_status)
+        _record_slack_activity(
+            conn,
+            action="slack.material_collection_confirmed",
+            workflow_id=mapping["workflow_id"],
+            target_id=mapping["id"],
+            metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "dry_run": bool(send_result.get("dry_run"))},
+        )
+
+    wf = conn.execute("SELECT current_stage_id, assignee FROM workflow_instances WHERE id=?", (mapping["workflow_id"],)).fetchone()
+    response = {
+        "ok": bool(send_result.get("sent")),
+        "workflow_id": mapping["workflow_id"],
+        "mapping_id": mapping["id"],
+        "channel_id": channel_id,
+        "material_status": material_status,
+        "current_stage_id": wf["current_stage_id"] if wf else "",
+        "assignee": wf["assignee"] if wf else "",
+        "message": message,
+        "message_sent": bool(send_result.get("sent")),
+        "message_ts": send_result.get("ts") or "",
+    }
+    if not send_result.get("sent"):
+        response["reason"] = send_result.get("reason") or "send_failed"
+    return response
+
+
+def _handle_message_files_event(conn: sqlite3.Connection, *, payload: dict[str, Any], event: dict[str, Any], event_id: str, team_id: str, channel_id: str) -> dict[str, Any]:
+    files = event.get("files") or []
+    if not isinstance(files, list):
+        files = []
+
+    mapping = conn.execute(
+        "SELECT * FROM slack_channel_project_mappings WHERE team_id=? AND channel_id=? AND status='active'",
+        (team_id, channel_id),
+    ).fetchone()
+    if not mapping:
+        return {"ok": True, "ignored": True, "reason": "unmapped_channel", "event_type": "message", "channel_id": channel_id}
+    if not files:
+        return _handle_material_text_event(
+            conn,
+            mapping=mapping,
+            event=event,
+            event_id=event_id,
+            team_id=team_id,
+            channel_id=channel_id,
+        )
+
+    stage_id = _source_material_stage_id(conn, mapping["workflow_id"])
+    stored_files: list[dict[str, Any]] = []
+    rejected_files: list[dict[str, Any]] = []
+    now = _now()
+    for index, file_info in enumerate(files):
+        if not isinstance(file_info, dict):
+            continue
+        slack_file_id = str(file_info.get("id") or f"{event_id}:{index}").strip()
+        existing = conn.execute(
+            "SELECT * FROM slack_workflow_source_files WHERE mapping_id=? AND slack_file_id=?",
+            (mapping["id"], slack_file_id),
+        ).fetchone()
+        if existing:
+            target = stored_files if existing["status"] == "stored" else rejected_files
+            target.append(row_to_dict(existing))
+            continue
+
+        filename = str(file_info.get("name") or file_info.get("title") or slack_file_id).strip()
+        title = str(file_info.get("title") or filename).strip()
+        mimetype = str(file_info.get("mimetype") or file_info.get("mime_type") or "").strip()
+        if index >= _slack_max_files_per_message():
+            supported, rejection_reason = False, f"file_count_limit_exceeded:{_slack_max_files_per_message()}"
+        else:
+            supported, rejection_reason = _slack_file_supported(file_info)
+        artifact_id = ""
+        status = "stored" if supported else "rejected"
+        if supported:
+            artifact_id = _create_slack_source_artifact(
+                conn,
+                workflow_id=mapping["workflow_id"],
+                stage_id=stage_id,
+                file_info=file_info,
+                filename=filename,
+                title=title,
+                mimetype=mimetype,
+            )
+        source_id = _uuid("sfs_")
+        conn.execute(
+            """INSERT INTO slack_workflow_source_files
+               (id, mapping_id, workflow_id, artifact_id, slack_file_id, filename, title, mimetype, size,
+                url_private, url_private_download, uploaded_user, uploaded_ts, status, rejection_reason,
+                metadata_json, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                source_id,
+                mapping["id"],
+                mapping["workflow_id"],
+                artifact_id or None,
+                slack_file_id,
+                filename,
+                title,
+                mimetype,
+                int(file_info.get("size") or 0),
+                str(file_info.get("url_private") or ""),
+                str(file_info.get("url_private_download") or ""),
+                str(file_info.get("user") or file_info.get("user_id") or event.get("user") or ""),
+                str(file_info.get("created") or file_info.get("timestamp") or event.get("ts") or ""),
+                status,
+                rejection_reason,
+                _slack_file_metadata_json(file_info),
+                now,
+                now,
+            ),
+        )
+        row = {
+            "id": source_id,
+            "mapping_id": mapping["id"],
+            "workflow_id": mapping["workflow_id"],
+            "artifact_id": artifact_id,
+            "slack_file_id": slack_file_id,
+            "filename": filename,
+            "title": title,
+            "mimetype": mimetype,
+            "status": status,
+            "rejection_reason": rejection_reason,
+        }
+        (stored_files if supported else rejected_files).append(row)
+
+    if stored_files:
+        _transition_to_material_waiting(conn, mapping["workflow_id"])
+    message = _material_confirmation_message(stored_files, rejected_files)
+    send_result = _post_slack_message(channel_id, message)
+    _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result)
+    _record_slack_activity(
+        conn,
+        action="slack.material_files_collected",
+        workflow_id=mapping["workflow_id"],
+        target_id=mapping["id"],
+        metadata={
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "event_id": event_id,
+            "stored_count": len(stored_files),
+            "rejected_count": len(rejected_files),
+            "dry_run": bool(send_result.get("dry_run")),
+        },
+    )
+    response = {
+        "ok": bool(send_result.get("sent")),
+        "workflow_id": mapping["workflow_id"],
+        "mapping_id": mapping["id"],
+        "channel_id": channel_id,
+        "stored_count": len(stored_files),
+        "rejected_count": len(rejected_files),
+        "source_files": stored_files + rejected_files,
+        "message": message,
+        "message_sent": bool(send_result.get("sent")),
+        "message_ts": send_result.get("ts") or "",
+    }
+    if not send_result.get("sent"):
+        response["reason"] = send_result.get("reason") or "send_failed"
+    return response
 
 
 def _receipt_response(conn: sqlite3.Connection, receipt: sqlite3.Row) -> dict[str, Any] | None:
@@ -549,7 +1080,7 @@ def _handle_slack_event(payload: dict[str, Any], request: Request, body: bytes) 
     enterprise_id = str(payload.get("enterprise_id") or event.get("enterprise") or "").strip()
     event_id = str(payload.get("event_id") or "").strip()
     channel_id, channel_name = _extract_event_channel(event)
-    if channel_id and not channel_name:
+    if channel_id and not channel_name and event_type != "message":
         channel_name = _fetch_slack_channel_name(channel_id)
     body_hash = hashlib.sha256(body).hexdigest()
 
@@ -567,6 +1098,31 @@ def _handle_slack_event(payload: dict[str, Any], request: Request, body: bytes) 
             duplicate = _receipt_response(conn, existing_receipt)
             if duplicate:
                 return duplicate
+
+        if event_type == "message":
+            if not channel_id:
+                response = {"ok": False, "reason": "channel_required", "event_type": event_type}
+                _finish_receipt(conn, event_id=event_id, status="failed", response=response, error=response["reason"])
+                return response
+            response = _handle_message_files_event(
+                conn,
+                payload=payload,
+                event=event,
+                event_id=event_id,
+                team_id=team_id,
+                channel_id=channel_id,
+            )
+            receipt_status = "ignored" if response.get("ignored") else ("succeeded" if response.get("ok") else "failed")
+            _finish_receipt(
+                conn,
+                event_id=event_id,
+                status=receipt_status,
+                response=response,
+                mapping_id=response.get("mapping_id", ""),
+                workflow_id=response.get("workflow_id", ""),
+                error=response.get("reason", "") if receipt_status == "failed" else "",
+            )
+            return response
 
         if event_type not in SUPPORTED_CHANNEL_EVENTS:
             response = {"ok": True, "ignored": True, "reason": "unsupported_event", "event_type": event_type}

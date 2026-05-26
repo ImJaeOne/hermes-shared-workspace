@@ -105,11 +105,20 @@ def get_workflow(wf_id: str):
             "SELECT * FROM activity_logs WHERE workflow_id=? ORDER BY created_at DESC, id DESC LIMIT 100", (wf_id,)
         ).fetchall())
 
+        source_files = rows_to_list(conn.execute(
+            "SELECT * FROM slack_workflow_source_files WHERE workflow_id=? ORDER BY created_at, id", (wf_id,)
+        ).fetchall())
+        material_collection_state = row_to_dict(conn.execute(
+            "SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (wf_id,)
+        ).fetchone())
+
         wf["stages"] = stages_with_status
         wf["artifacts"] = artifacts
         wf["transitions"] = transitions
         wf["pending_approval"] = pending_approval
         wf["activity_logs"] = activity_logs
+        wf["source_files"] = source_files
+        wf["material_collection_state"] = material_collection_state
 
     return wf
 

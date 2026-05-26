@@ -32,6 +32,7 @@ from scripts.patch_hermes_dashboard_public_api import (
 
 import db_schema
 import plugin_api
+import slack_onboarding_api
 importlib.reload(plugin_api)
 
 app = FastAPI()
@@ -100,6 +101,86 @@ def slack_member_joined_payload(event_id: str, user_id: str, channel_id: str, ch
     }
 
 
+def slack_message_files_payload(event_id: str, channel_id: str = "CLOCALTEST") -> dict:
+    return {
+        "type": "event_callback",
+        "team_id": "TLOCAL",
+        "api_app_id": "AAXLOCAL",
+        "event_id": event_id,
+        "event_time": int(time.time()),
+        "event": {
+            "type": "message",
+            "channel": channel_id,
+            "user": "UCLIENT1",
+            "ts": "1710000000.000200",
+            "text": "자료 첨부드립니다.",
+            "files": [
+                {
+                    "id": "FINTROPDF",
+                    "name": "intro.pdf",
+                    "title": "회사 소개서",
+                    "mimetype": "application/pdf",
+                    "size": 29,
+                    "url_private": "https://slack.example/files/FINTROPDF",
+                    "url_private_download": "https://slack.example/files/FINTROPDF/download",
+                    "user": "UCLIENT1",
+                    "created": 1710000000,
+                    "content": "%PDF-1.4 test source material",
+                },
+                {
+                    "id": "FNOTESMD",
+                    "name": "notes.md",
+                    "title": "담당자 메모",
+                    "mimetype": "text/markdown",
+                    "size": 22,
+                    "url_private": "https://slack.example/files/FNOTESMD",
+                    "user": "UCLIENT2",
+                    "timestamp": 1710000001,
+                    "content_text": "# 메모\n- 핵심 자료입니다.",
+                },
+                {
+                    "id": "FARCHIVEZIP",
+                    "name": "archive.zip",
+                    "title": "압축 파일",
+                    "mimetype": "application/zip",
+                    "size": 1024,
+                    "url_private": "https://slack.example/files/FARCHIVEZIP",
+                    "user": "UCLIENT3",
+                    "created": 1710000002,
+                },
+                {
+                    "id": "FHUGEPDF",
+                    "name": "huge.pdf",
+                    "title": "대용량 회사 소개서",
+                    "mimetype": "application/pdf",
+                    "size": 30 * 1024 * 1024,
+                    "url_private": "https://slack.example/files/FHUGEPDF",
+                    "user": "UCLIENT4",
+                    "created": 1710000003,
+                    "content": "%PDF-1.4 oversized test source material",
+                },
+            ],
+        },
+    }
+
+
+def slack_message_text_payload(event_id: str, text: str, channel_id: str = "CLOCALTEST") -> dict:
+    return {
+        "type": "event_callback",
+        "team_id": "TLOCAL",
+        "api_app_id": "AAXLOCAL",
+        "event_id": event_id,
+        "event_time": int(time.time()),
+        "event": {
+            "type": "message",
+            "channel": channel_id,
+            "user": "UCLIENT1",
+            "ts": "1710000000.000300",
+            "text": text,
+        },
+    }
+
+
 def check_parent_session():
     r = client.get("/auth/session")
     check("GET /auth/session status", r.status_code == 200, f"got {r.status_code}: {r.text}")
@@ -131,13 +212,28 @@ patched_allowlist = patch_public_api_allowlist_text(web_server_allowlist_sample)
 check("Slack events path added to dashboard public allowlist", SLACK_EVENTS_PUBLIC_PATH in patched_allowlist, patched_allowlist)
 check("Slack events path added once", patched_allowlist.count(SLACK_EVENTS_PUBLIC_PATH) == 1, patched_allowlist)
 check("dashboard public allowlist patch idempotent", patch_public_api_allowlist_text(patched_allowlist) == patched_allowlist)
+web_server_allowlist_with_extra_path = '''_PUBLIC_API_PATHS: frozenset = frozenset({
+    "/api/status",
+    "/api/dashboard/plugins",
+    "/api/dashboard/health",
+})
+'''
+try:
+    patched_extra_path_allowlist = patch_public_api_allowlist_text(web_server_allowlist_with_extra_path)
+except RuntimeError as exc:
+    patched_extra_path_allowlist = str(exc)
+check(
+    "dashboard public allowlist patch tolerates additional public paths",
+    SLACK_EVENTS_PUBLIC_PATH in patched_extra_path_allowlist,
+    patched_extra_path_allowlist,
+)
 try:
     patch_public_api_allowlist_text('_PUBLIC_API_PATHS: frozenset = frozenset({"/api/status"})')
 except RuntimeError:
     missing_anchor_failed = True
 else:
     missing_anchor_failed = False
-check("dashboard public allowlist patch fails fast when anchor changes", missing_anchor_failed)
+check("dashboard public allowlist patch fails fast when allowlist block changes", missing_anchor_failed)
 
 print("\n=== Agents ===")
 r = client.get("/agents")
@@ -187,10 +283,12 @@ check("Slack dry-run message treated as sent", slack_result.get("message_sent") 
 slack_wf_id = slack_result.get("workflow_id")
 check("Slack workflow id returned", isinstance(slack_wf_id, str) and slack_wf_id.startswith("wi_"), str(slack_result))
 
+slack_mapping_id = ""
 with plugin_api.get_db() as conn:
     mapping = conn.execute("SELECT * FROM slack_channel_project_mappings WHERE team_id=? AND channel_id=?", ("TLOCAL", "CLOCALTEST")).fetchone()
     check("Slack channel mapping row exists", mapping is not None)
     if mapping:
+        slack_mapping_id = mapping["id"]
         check("Slack mapping stores company", mapping["company_name"] == "테스트전자", dict(mapping))
         check("Slack mapping stores workflow", mapping["workflow_id"] == slack_wf_id, dict(mapping))
         check("Slack mapping marks message sent", bool(mapping["onboarding_message_sent_at"]), dict(mapping))
@@ -209,6 +307,75 @@ with plugin_api.get_db() as conn:
         check("Slack event receipt succeeded", receipt["status"] == "succeeded", dict(receipt))
     activity = conn.execute("SELECT * FROM activity_logs WHERE workflow_id=? AND action=?", (slack_wf_id, "slack.channel_onboarded")).fetchone()
     check("Slack onboarding activity exists", activity is not None)
+
+message_payload = slack_message_files_payload("EvFILES1")
+message_body, message_headers = slack_headers(message_payload)
+r = anon.post("/slack/events", content=message_body, headers=message_headers)
+check("Slack message files event status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+files_result = r.json()
+check("Slack message files response ok", files_result.get("ok") is True, str(files_result))
+check("Slack message files stores supported files", files_result.get("stored_count") == 2, str(files_result))
+check("Slack message files rejects unsupported or oversized files", files_result.get("rejected_count") == 2, str(files_result))
+confirmation_message = files_result.get("message", "")
+check("Slack material confirmation message text", "첨부된 자료는 다음과 같습니다" in confirmation_message and "추가 자료는 없으십니까?" in confirmation_message, str(files_result))
+check("Slack material confirmation includes supported format guide", "지원 형식" in confirmation_message and "pdf" in confirmation_message.lower() and "docx" in confirmation_message.lower() and "pptx" in confirmation_message.lower() and "xlsx" in confirmation_message.lower(), confirmation_message)
+check("Slack material confirmation includes file limits", "최대 10개" in confirmation_message and "25MB" in confirmation_message, confirmation_message)
+check("Slack material confirmation dry-run sent", files_result.get("message_sent") is True, str(files_result))
+
+with plugin_api.get_db() as conn:
+    source_rows = conn.execute("SELECT * FROM slack_workflow_source_files WHERE workflow_id=? ORDER BY created_at, id", (slack_wf_id,)).fetchall()
+    check("Slack source file rows include all files", len(source_rows) == 4, [dict(r) for r in source_rows])
+    accepted_rows = [r for r in source_rows if r["status"] == "stored"]
+    rejected_rows = [r for r in source_rows if r["status"] == "rejected"]
+    check("Slack accepted source files preserved", sorted(r["filename"] for r in accepted_rows) == ["intro.pdf", "notes.md"], [dict(r) for r in accepted_rows])
+    rejection_reasons = {r["filename"]: r["rejection_reason"] for r in rejected_rows}
+    check("Slack rejected source file reason preserved", len(rejected_rows) == 2 and "archive.zip" in rejection_reasons and "huge.pdf" in rejection_reasons and "file_too_large" in rejection_reasons.get("huge.pdf", ""), [dict(r) for r in rejected_rows])
+    intro_row = next((r for r in accepted_rows if r["filename"] == "intro.pdf"), None)
+    check("Slack source file metadata preserved", intro_row is not None and intro_row["slack_file_id"] == "FINTROPDF" and intro_row["uploaded_user"] == "UCLIENT1" and intro_row["url_private_download"].endswith("/download"), [dict(r) for r in accepted_rows])
+    check("Slack source files linked to artifacts", len({r["artifact_id"] for r in accepted_rows if r["artifact_id"]}) == 2, [dict(r) for r in accepted_rows])
+    artifacts = conn.execute("SELECT id, artifact_type, original_filename, is_latest FROM artifacts WHERE workflow_id=? AND artifact_type='source_material' ORDER BY created_at", (slack_wf_id,)).fetchall()
+    check("Slack source file artifacts not hidden by latest policy", len(artifacts) == 2 and all(r["is_latest"] == 1 for r in artifacts), [dict(r) for r in artifacts])
+    wf_after_files = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (slack_wf_id,)).fetchone()
+    check("Slack workflow moved to material waiting", wf_after_files["current_stage_id"] == "p_material_waiting", dict(wf_after_files))
+    material_state = conn.execute("SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (slack_wf_id,)).fetchone()
+    check("Slack material collection state stored", material_state is not None and material_state["status"] == "pending_confirmation" and material_state["source_file_count"] == 2 and material_state["rejected_file_count"] == 2, dict(material_state) if material_state else "")
+
+r = client.get(f"/workflows/{slack_wf_id}")
+check("Workflow detail includes Slack source files status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+slack_detail = r.json()
+check("Workflow detail source files returned", len(slack_detail.get("source_files", [])) == 4, slack_detail.get("source_files"))
+check("Workflow detail material collection state returned", slack_detail.get("material_collection_state", {}).get("source_file_count") == 2 and slack_detail.get("material_collection_state", {}).get("rejected_file_count") == 2, slack_detail.get("material_collection_state"))
+check("Workflow detail source files preserve statuses", sorted({f.get("status") for f in slack_detail.get("source_files", [])}) == ["rejected", "stored"], slack_detail.get("source_files"))
+
+more_payload = slack_message_text_payload("EvMORE1", "아니요, 추가 자료가 있습니다.")
+more_body, more_headers = slack_headers(more_payload)
+r = anon.post("/slack/events", content=more_body, headers=more_headers)
+check("Slack material more-needed response status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+more_result = r.json()
+check("Slack material more-needed status stored", more_result.get("material_status") == "awaiting_more_materials", str(more_result))
+check("Slack material more-needed asks for upload", "추가 자료" in more_result.get("message", "") and "첨부" in more_result.get("message", ""), str(more_result))
+with plugin_api.get_db() as conn:
+    material_state = conn.execute("SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (slack_wf_id,)).fetchone()
+    wf_waiting_more = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (slack_wf_id,)).fetchone()
+    check("Slack material more-needed state persisted", material_state is not None and material_state["status"] == "awaiting_more_materials", dict(material_state) if material_state else "")
+    check("Slack material more-needed keeps workflow waiting", wf_waiting_more["current_stage_id"] == "p_material_waiting" and wf_waiting_more["assignee"] == "기획팀 임팀장", dict(wf_waiting_more))
+
+confirm_payload = slack_message_text_payload("EvCONFIRM1", "네, 없습니다. 자료조사 worker에게 전달해주세요.")
+confirm_body, confirm_headers = slack_headers(confirm_payload)
+r = anon.post("/slack/events", content=confirm_body, headers=confirm_headers)
+check("Slack material confirmation reply status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+confirm_result = r.json()
+check("Slack material confirmation reply stored", confirm_result.get("material_status") == "confirmed", str(confirm_result))
+check("Slack material confirmation starts worker", "자료조사 worker" in confirm_result.get("message", "") and confirm_result.get("current_stage_id") == "p_research_running", str(confirm_result))
+with plugin_api.get_db() as conn:
+    confirmed_state = conn.execute("SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (slack_wf_id,)).fetchone()
+    wf_research = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (slack_wf_id,)).fetchone()
+    research_transition = conn.execute("SELECT * FROM stage_transitions WHERE workflow_id=? AND to_stage_id='p_research_running'", (slack_wf_id,)).fetchone()
+    confirm_activity = conn.execute("SELECT * FROM activity_logs WHERE workflow_id=? AND action=?", (slack_wf_id, "slack.material_collection_confirmed")).fetchone()
+    check("Slack material confirmation state persisted", confirmed_state is not None and confirmed_state["status"] == "confirmed", dict(confirmed_state) if confirmed_state else "")
+    check("Slack material confirmation moves workflow to research", wf_research["current_stage_id"] == "p_research_running" and wf_research["assignee"] == "기획팀 임사원", dict(wf_research))
+    check("Slack material confirmation transition logged", research_transition is not None and research_transition["triggered_by"] == "slack", dict(research_transition) if research_transition else "")
+    check("Slack material confirmation activity logged", confirm_activity is not None, dict(confirm_activity) if confirm_activity else "")
 
 r = anon.post("/slack/events", content=body, headers=headers)
 check("Slack duplicate event status", r.status_code == 200, f"got {r.status_code}: {r.text}")
@@ -341,7 +508,7 @@ migration_conn.execute("INSERT INTO artifacts (id, workflow_id, stage_id, artifa
 migration_conn.execute("PRAGMA user_version = 4")
 db_schema._run_migrations(migration_conn)
 migration_row = migration_conn.execute("SELECT * FROM artifacts WHERE id='art_old'").fetchone()
-check("schema v6 migration sets user_version", migration_conn.execute("PRAGMA user_version").fetchone()[0] >= 6)
+check("schema v7 migration sets user_version", migration_conn.execute("PRAGMA user_version").fetchone()[0] >= 7)
 check("schema v5 backfills storage backend", migration_row["storage_backend"] == "local", dict(migration_row))
 check("schema v5 backfills storage key", migration_row["storage_key"] == "wi_old/stg_old/art_old.md", dict(migration_row))
 check("schema v5 backfills version/latest", migration_row["version"] == 1 and migration_row["is_latest"] == 1, dict(migration_row))
@@ -350,6 +517,7 @@ slack_tables = {
     for r in migration_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'slack_%'").fetchall()
 }
 check("schema v6 creates Slack mapping tables", {"slack_channel_project_mappings", "slack_event_receipts"}.issubset(slack_tables), slack_tables)
+check("schema v7 creates Slack material tables", {"slack_workflow_source_files", "slack_material_collection_states"}.issubset(slack_tables), slack_tables)
 migration_conn.close()
 
 legacy_seed_conn = sqlite3.connect(":memory:")

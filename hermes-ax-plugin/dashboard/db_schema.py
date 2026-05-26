@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS agent_types (
@@ -200,6 +200,41 @@ CREATE TABLE IF NOT EXISTS slack_event_receipts (
     error TEXT NOT NULL DEFAULT '',
     received_at TEXT NOT NULL,
     processed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS slack_workflow_source_files (
+    id TEXT PRIMARY KEY,
+    mapping_id TEXT NOT NULL REFERENCES slack_channel_project_mappings(id) ON DELETE CASCADE,
+    workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+    artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+    slack_file_id TEXT NOT NULL DEFAULT '',
+    filename TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    mimetype TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    url_private TEXT NOT NULL DEFAULT '',
+    url_private_download TEXT NOT NULL DEFAULT '',
+    uploaded_user TEXT NOT NULL DEFAULT '',
+    uploaded_ts TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'stored',
+    rejection_reason TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(mapping_id, slack_file_id)
+);
+
+CREATE TABLE IF NOT EXISTS slack_material_collection_states (
+    workflow_id TEXT PRIMARY KEY REFERENCES workflow_instances(id) ON DELETE CASCADE,
+    mapping_id TEXT NOT NULL REFERENCES slack_channel_project_mappings(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending_confirmation',
+    source_file_count INTEGER NOT NULL DEFAULT 0,
+    rejected_file_count INTEGER NOT NULL DEFAULT 0,
+    last_message TEXT NOT NULL DEFAULT '',
+    last_message_ts TEXT NOT NULL DEFAULT '',
+    last_message_sent_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
 );
 """
 
@@ -495,3 +530,52 @@ def _run_migrations(conn: sqlite3.Connection):
         )
         _backfill_slack_channel_project_mappings(conn)
         _set_schema_version(conn, 6)
+        current = 6
+
+    if current < 7:
+        conn.execute("""CREATE TABLE IF NOT EXISTS slack_workflow_source_files (
+            id TEXT PRIMARY KEY,
+            mapping_id TEXT NOT NULL REFERENCES slack_channel_project_mappings(id) ON DELETE CASCADE,
+            workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+            artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+            slack_file_id TEXT NOT NULL DEFAULT '',
+            filename TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            mimetype TEXT NOT NULL DEFAULT '',
+            size INTEGER NOT NULL DEFAULT 0,
+            url_private TEXT NOT NULL DEFAULT '',
+            url_private_download TEXT NOT NULL DEFAULT '',
+            uploaded_user TEXT NOT NULL DEFAULT '',
+            uploaded_ts TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'stored',
+            rejection_reason TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(mapping_id, slack_file_id)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS slack_material_collection_states (
+            workflow_id TEXT PRIMARY KEY REFERENCES workflow_instances(id) ON DELETE CASCADE,
+            mapping_id TEXT NOT NULL REFERENCES slack_channel_project_mappings(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'pending_confirmation',
+            source_file_count INTEGER NOT NULL DEFAULT 0,
+            rejected_file_count INTEGER NOT NULL DEFAULT 0,
+            last_message TEXT NOT NULL DEFAULT '',
+            last_message_ts TEXT NOT NULL DEFAULT '',
+            last_message_sent_at TEXT,
+            last_error TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_slack_source_files_workflow "
+            "ON slack_workflow_source_files(workflow_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_slack_source_files_mapping "
+            "ON slack_workflow_source_files(mapping_id, slack_file_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_slack_source_files_status "
+            "ON slack_workflow_source_files(status, created_at)"
+        )
+        _set_schema_version(conn, 7)
