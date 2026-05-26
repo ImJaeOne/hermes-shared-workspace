@@ -25,6 +25,11 @@ os.environ["HERMES_AX_SLACK_DRY_RUN"] = "true"
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from scripts.patch_hermes_dashboard_public_api import (
+    SLACK_EVENTS_PUBLIC_PATH,
+    patch_public_api_allowlist_text,
+)
+
 import db_schema
 import plugin_api
 importlib.reload(plugin_api)
@@ -115,6 +120,24 @@ check("write without parent token blocked", r.status_code == 401, f"got {r.statu
 check_parent_session()
 r = client.post("/auth/login", json={"username": "admin", "password": "testpass123"})
 check("AX login endpoint disabled", r.status_code == 410, f"got {r.status_code}: {r.text}")
+
+print("\n=== Docker Dashboard Public API Patch ===")
+web_server_allowlist_sample = '''_PUBLIC_API_PATHS: frozenset = frozenset({
+    "/api/status",
+    "/api/dashboard/plugins",
+})
+'''
+patched_allowlist = patch_public_api_allowlist_text(web_server_allowlist_sample)
+check("Slack events path added to dashboard public allowlist", SLACK_EVENTS_PUBLIC_PATH in patched_allowlist, patched_allowlist)
+check("Slack events path added once", patched_allowlist.count(SLACK_EVENTS_PUBLIC_PATH) == 1, patched_allowlist)
+check("dashboard public allowlist patch idempotent", patch_public_api_allowlist_text(patched_allowlist) == patched_allowlist)
+try:
+    patch_public_api_allowlist_text('_PUBLIC_API_PATHS: frozenset = frozenset({"/api/status"})')
+except RuntimeError:
+    missing_anchor_failed = True
+else:
+    missing_anchor_failed = False
+check("dashboard public allowlist patch fails fast when anchor changes", missing_anchor_failed)
 
 print("\n=== Agents ===")
 r = client.get("/agents")
