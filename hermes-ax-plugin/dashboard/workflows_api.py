@@ -111,6 +111,12 @@ def get_workflow(wf_id: str):
         material_collection_state = row_to_dict(conn.execute(
             "SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (wf_id,)
         ).fetchone())
+        worker_requests = rows_to_list(conn.execute(
+            "SELECT * FROM planning_worker_requests WHERE workflow_id=? ORDER BY created_at, id", (wf_id,)
+        ).fetchall())
+        worker_results = rows_to_list(conn.execute(
+            "SELECT * FROM planning_worker_results WHERE workflow_id=? ORDER BY created_at, id", (wf_id,)
+        ).fetchall())
 
         wf["stages"] = stages_with_status
         wf["artifacts"] = artifacts
@@ -119,6 +125,8 @@ def get_workflow(wf_id: str):
         wf["activity_logs"] = activity_logs
         wf["source_files"] = source_files
         wf["material_collection_state"] = material_collection_state
+        wf["worker_requests"] = worker_requests
+        wf["worker_results"] = worker_results
 
     return wf
 

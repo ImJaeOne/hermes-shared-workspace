@@ -36,6 +36,11 @@ router = APIRouter()
 PLANNING_TEMPLATE_ID = "planning_research_mvp_v1"
 PLANNING_ASSIGNEE = "기획팀 임팀장"
 PLANNING_WORKER_ASSIGNEE = "기획팀 임사원"
+STAGE_MATERIAL_WAITING = "p_material_waiting"
+STAGE_RESEARCH_RUNNING = "p_research_running"
+STAGE_USER_REVIEW_WAITING = "p_user_review_waiting"
+STAGE_REVISION_RUNNING = "p_revision_running"
+STAGE_RESEARCH_CONFIRMED = "p_research_confirmed"
 SLACK_DEFAULT_MAX_FILES_PER_MESSAGE = 10
 SLACK_DEFAULT_MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
 SUPPORTED_CHANNEL_EVENTS = {"channel_created", "channel_joined", "channel_rename", "member_joined_channel"}
@@ -206,6 +211,7 @@ def _record_slack_activity(
     action: str,
     workflow_id: str | None = None,
     target_id: str | None = None,
+    artifact_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ):
     _record_activity(
@@ -216,6 +222,7 @@ def _record_slack_activity(
         actor_label="slack",
         workflow_id=workflow_id,
         target_id=target_id,
+        artifact_id=artifact_id,
         metadata=metadata,
     )
 
@@ -705,6 +712,383 @@ def _transition_to_research_running(conn: sqlite3.Connection, workflow_id: str):
     _emit_event(conn, "stage_changed", workflow_id, payload={"from": wf["current_stage_id"], "to": target["id"]})
 
 
+def _transition_planning_stage(
+    conn: sqlite3.Connection,
+    workflow_id: str,
+    target_stage_id: str,
+    *,
+    assignee: str,
+    note: str,
+    status: str | None = None,
+) -> None:
+    wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (workflow_id,)).fetchone()
+    if not wf:
+        return
+    target = conn.execute("SELECT * FROM stage_definitions WHERE template_id=? AND id=?", (wf["template_id"], target_stage_id)).fetchone()
+    if not target:
+        return
+    now = _now()
+    status_sql = ", status=?" if status else ""
+    params: list[Any] = [target_stage_id, assignee, now]
+    if status:
+        params.append(status)
+    params.append(workflow_id)
+    conn.execute(
+        f"UPDATE workflow_instances SET current_stage_id=?, assignee=?, updated_at=?{status_sql} WHERE id=?",
+        params,
+    )
+    if wf["current_stage_id"] != target_stage_id:
+        conn.execute(
+            "INSERT INTO stage_transitions (workflow_id, from_stage_id, to_stage_id, triggered_by, note, created_at) VALUES (?,?,?,?,?,?)",
+            (workflow_id, wf["current_stage_id"], target_stage_id, "slack", note, now),
+        )
+        _emit_event(conn, "stage_changed", workflow_id, payload={"from": wf["current_stage_id"], "to": target_stage_id})
+
+
+def _mapping_for_workflow(conn: sqlite3.Connection, workflow_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM slack_channel_project_mappings WHERE workflow_id=? AND status='active' LIMIT 1",
+        (workflow_id,),
+    ).fetchone()
+
+
+def _workflow_company_name(wf: sqlite3.Row | dict[str, Any]) -> str:
+    try:
+        metadata = json.loads(wf["metadata_json"] or "{}")
+    except Exception:
+        metadata = {}
+    return str(metadata.get("company_name") or wf["title"].strip("[]").split("]")[0] or "").strip()
+
+
+def _worker_source_files(conn: sqlite3.Connection, workflow_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT id, artifact_id, slack_file_id, filename, title, mimetype, size, url_private, url_private_download, uploaded_user, uploaded_ts
+           FROM slack_workflow_source_files
+           WHERE workflow_id=? AND status='stored'
+           ORDER BY created_at, id""",
+        (workflow_id,),
+    ).fetchall()
+    return [row_to_dict(r) for r in rows]
+
+
+def _latest_research_artifact(conn: sqlite3.Connection, workflow_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """SELECT id, title, artifact_type, stage_id, version, is_latest
+           FROM artifacts
+           WHERE workflow_id=? AND artifact_type='research_report'
+           ORDER BY is_latest DESC, version DESC, created_at DESC LIMIT 1""",
+        (workflow_id,),
+    ).fetchone()
+    return row_to_dict(row) if row else None
+
+
+def _build_worker_payload(
+    conn: sqlite3.Connection,
+    *,
+    mapping: sqlite3.Row,
+    request_type: str,
+    source_event_id: str,
+    revision_instruction: str = "",
+    revision_attachments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (mapping["workflow_id"],)).fetchone()
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    try:
+        metadata = json.loads(wf["metadata_json"] or "{}")
+    except Exception:
+        metadata = {}
+    task_type = "revision" if request_type == "revision" else "initial_research"
+    stage_id = STAGE_REVISION_RUNNING if request_type == "revision" else STAGE_RESEARCH_RUNNING
+    payload = {
+        "schema_version": 1,
+        "worker": "planning_material_research_worker",
+        "task_type": task_type,
+        "workflow_id": wf["id"],
+        "stage_id": stage_id,
+        "company_name": _workflow_company_name(wf),
+        "project_key": metadata.get("project_key", ""),
+        "requested_by": "planning_lead_orchestrator",
+        "source_event_id": source_event_id,
+        "slack": {
+            "team_id": mapping["team_id"],
+            "channel_id": mapping["channel_id"],
+            "channel_name": mapping["channel_name"],
+            "mapping_id": mapping["id"],
+        },
+        "source_files": _worker_source_files(conn, wf["id"]),
+    }
+    if request_type == "revision":
+        payload["revision"] = {
+            "instruction": revision_instruction.strip(),
+            "attachments": revision_attachments or [],
+            "base_report": _latest_research_artifact(conn, wf["id"]),
+        }
+    return payload
+
+
+def _create_worker_request(
+    conn: sqlite3.Connection,
+    *,
+    mapping: sqlite3.Row,
+    request_type: str,
+    source_event_id: str,
+    revision_instruction: str = "",
+    revision_attachments: list[dict[str, Any]] | None = None,
+) -> sqlite3.Row:
+    payload = _build_worker_payload(
+        conn,
+        mapping=mapping,
+        request_type=request_type,
+        source_event_id=source_event_id,
+        revision_instruction=revision_instruction,
+        revision_attachments=revision_attachments,
+    )
+    now = _now()
+    req_id = _uuid("wreq_")
+    conn.execute(
+        """INSERT INTO planning_worker_requests
+           (id, workflow_id, mapping_id, request_type, status, payload_json, source_event_id, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (req_id, mapping["workflow_id"], mapping["id"], request_type, "queued", json.dumps(payload, ensure_ascii=False), source_event_id, now, now),
+    )
+    _record_slack_activity(
+        conn,
+        action="slack.worker_request_created",
+        workflow_id=mapping["workflow_id"],
+        target_id=req_id,
+        metadata={"request_type": request_type, "task_type": payload["task_type"], "source_event_id": source_event_id},
+    )
+    return conn.execute("SELECT * FROM planning_worker_requests WHERE id=?", (req_id,)).fetchone()
+
+
+def _review_message_for_result(title: str) -> str:
+    return f"자료조사 결과가 도착했습니다: {title}\n검토 후 확정이면 '확정' 또는 '좋아'라고 답해주세요. 수정이 필요하면 요청 사항을 그대로 남겨주세요."
+
+
+def _positive_reply(text: str) -> bool:
+    normalized = re.sub(r"[\s!?.。~]+", "", text.strip().lower())
+    if not normalized:
+        return False
+    positive_values = {"ㅇㅋ", "오케이", "ok", "okay", "좋아", "좋아요", "진행해", "진행", "다음", "확정", "승인", "네", "넵"}
+    if normalized in positive_values:
+        return True
+    return any(token in normalized for token in ("확정", "진행해", "좋아요", "좋습니다")) and len(normalized) <= 20
+
+
+def _create_research_report_artifact(conn: sqlite3.Connection, *, workflow_id: str, title: str, content: str) -> str:
+    now = _now()
+    art_id = _uuid("art_")
+    version_row = conn.execute(
+        "SELECT COALESCE(MAX(version), 0) AS max_version FROM artifacts WHERE workflow_id=? AND artifact_type='research_report'",
+        (workflow_id,),
+    ).fetchone()
+    version = int(version_row["max_version"] or 0) + 1
+    conn.execute(
+        "UPDATE artifacts SET is_latest=0, updated_at=? WHERE workflow_id=? AND artifact_type='research_report'",
+        (now, workflow_id),
+    )
+    conn.execute(
+        """INSERT INTO artifacts
+           (id, workflow_id, stage_id, artifact_type, title, content, content_type, status,
+            file_path, file_size, mime_type, storage_backend, storage_key, original_filename,
+            version, is_latest, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            art_id,
+            workflow_id,
+            STAGE_USER_REVIEW_WAITING,
+            "research_report",
+            title,
+            content,
+            "text/markdown",
+            "draft",
+            "",
+            0,
+            "text/markdown",
+            "local",
+            "",
+            "",
+            version,
+            1,
+            now,
+            now,
+        ),
+    )
+    _emit_event(conn, "artifact_added", workflow_id, art_id)
+    return art_id
+
+
+def _create_revision_file_artifacts(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    files: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    attachments: list[dict[str, Any]] = []
+    for index, file_info in enumerate(files):
+        if not isinstance(file_info, dict):
+            continue
+        supported, rejection_reason = _slack_file_supported(file_info)
+        if not supported:
+            attachments.append({
+                "filename": str(file_info.get("name") or file_info.get("title") or f"file-{index}"),
+                "status": "rejected",
+                "rejection_reason": rejection_reason,
+            })
+            continue
+        filename = str(file_info.get("name") or file_info.get("title") or f"revision-{index}").strip()
+        title = str(file_info.get("title") or filename).strip()
+        mimetype = str(file_info.get("mimetype") or file_info.get("mime_type") or "text/plain").strip()
+        artifact_id = _create_slack_source_artifact(
+            conn,
+            workflow_id=workflow_id,
+            stage_id=STAGE_REVISION_RUNNING,
+            file_info=file_info,
+            filename=filename,
+            title=title,
+            mimetype=mimetype,
+        )
+        conn.execute(
+            "UPDATE artifacts SET artifact_type='revision_request', title=? WHERE id=?",
+            (title, artifact_id),
+        )
+        attachments.append({
+            "artifact_id": artifact_id,
+            "slack_file_id": str(file_info.get("id") or ""),
+            "filename": filename,
+            "title": title,
+            "mimetype": mimetype,
+            "status": "stored",
+        })
+    return attachments
+
+
+def _handle_review_reply_event(
+    conn: sqlite3.Connection,
+    *,
+    mapping: sqlite3.Row,
+    event: dict[str, Any],
+    files: list[dict[str, Any]],
+    event_id: str,
+    team_id: str,
+    channel_id: str,
+) -> dict[str, Any] | None:
+    wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (mapping["workflow_id"],)).fetchone()
+    if not wf or wf["current_stage_id"] != STAGE_USER_REVIEW_WAITING:
+        return None
+
+    text = str(event.get("text") or "").strip()
+    if files:
+        attachments = _create_revision_file_artifacts(conn, workflow_id=mapping["workflow_id"], files=files)
+        instruction = text or "첨부 파일 기준으로 자료조사 결과를 수정해주세요."
+        _transition_planning_stage(
+            conn,
+            mapping["workflow_id"],
+            STAGE_REVISION_RUNNING,
+            assignee=PLANNING_WORKER_ASSIGNEE,
+            note="Slack review attachment requested revision",
+        )
+        worker_request = _create_worker_request(
+            conn,
+            mapping=mapping,
+            request_type="revision",
+            source_event_id=event_id,
+            revision_instruction=instruction,
+            revision_attachments=attachments,
+        )
+        message = "수정 요청 파일을 확인했습니다. 기획팀 임사원에게 자료조사 worker 수정 실행을 전달했습니다."
+        send_result = _post_slack_message(channel_id, message)
+        _record_slack_activity(
+            conn,
+            action="slack.revision_requested",
+            workflow_id=mapping["workflow_id"],
+            target_id=worker_request["id"],
+            metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "request_type": "attachment", "dry_run": bool(send_result.get("dry_run"))},
+        )
+        return {
+            "ok": bool(send_result.get("sent")),
+            "workflow_id": mapping["workflow_id"],
+            "mapping_id": mapping["id"],
+            "channel_id": channel_id,
+            "review_status": "revision_requested",
+            "current_stage_id": STAGE_REVISION_RUNNING,
+            "worker_request_id": worker_request["id"],
+            "message": message,
+            "message_sent": bool(send_result.get("sent")),
+            "message_ts": send_result.get("ts") or "",
+        }
+
+    if _positive_reply(text):
+        _transition_planning_stage(
+            conn,
+            mapping["workflow_id"],
+            STAGE_RESEARCH_CONFIRMED,
+            assignee=PLANNING_ASSIGNEE,
+            note="Slack review confirmed research",
+            status="completed",
+        )
+        message = "자료조사 결과를 확정했습니다. 감사합니다."
+        send_result = _post_slack_message(channel_id, message)
+        _record_slack_activity(
+            conn,
+            action="slack.research_confirmed",
+            workflow_id=mapping["workflow_id"],
+            target_id=mapping["id"],
+            metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "dry_run": bool(send_result.get("dry_run"))},
+        )
+        return {
+            "ok": bool(send_result.get("sent")),
+            "workflow_id": mapping["workflow_id"],
+            "mapping_id": mapping["id"],
+            "channel_id": channel_id,
+            "review_status": "confirmed",
+            "current_stage_id": STAGE_RESEARCH_CONFIRMED,
+            "message": message,
+            "message_sent": bool(send_result.get("sent")),
+            "message_ts": send_result.get("ts") or "",
+        }
+
+    if text:
+        _transition_planning_stage(
+            conn,
+            mapping["workflow_id"],
+            STAGE_REVISION_RUNNING,
+            assignee=PLANNING_WORKER_ASSIGNEE,
+            note="Slack review requested revision",
+        )
+        worker_request = _create_worker_request(
+            conn,
+            mapping=mapping,
+            request_type="revision",
+            source_event_id=event_id,
+            revision_instruction=text,
+            revision_attachments=[],
+        )
+        message = "수정 요청을 확인했습니다. 기획팀 임사원에게 자료조사 worker 수정 실행을 전달했습니다."
+        send_result = _post_slack_message(channel_id, message)
+        _record_slack_activity(
+            conn,
+            action="slack.revision_requested",
+            workflow_id=mapping["workflow_id"],
+            target_id=worker_request["id"],
+            metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "request_type": "text", "dry_run": bool(send_result.get("dry_run"))},
+        )
+        return {
+            "ok": bool(send_result.get("sent")),
+            "workflow_id": mapping["workflow_id"],
+            "mapping_id": mapping["id"],
+            "channel_id": channel_id,
+            "review_status": "revision_requested",
+            "current_stage_id": STAGE_REVISION_RUNNING,
+            "worker_request_id": worker_request["id"],
+            "message": message,
+            "message_sent": bool(send_result.get("sent")),
+            "message_ts": send_result.get("ts") or "",
+        }
+    return {"ok": True, "ignored": True, "reason": "empty_review_reply", "event_type": "message"}
+
+
 def _material_confirmation_message(stored_files: list[dict[str, Any]], rejected_files: list[dict[str, Any]]) -> str:
     lines = ["첨부된 자료는 다음과 같습니다"]
     if stored_files:
@@ -735,7 +1119,7 @@ def _classify_material_reply(text: str) -> str:
         return ""
     if "추가" in normalized and ("있" in normalized or "올리" in normalized or "첨부" in normalized) and "없" not in normalized:
         return "more_needed"
-    if "없" in normalized or "자료조사worker" in normalized or "전달" in normalized:
+    if "없" in normalized or "자료조사worker" in normalized or "전달" in normalized or _positive_reply(text):
         return "confirmed"
     return ""
 
@@ -825,6 +1209,12 @@ def _handle_material_text_event(
         )
     else:
         _transition_to_research_running(conn, mapping["workflow_id"])
+        worker_request = _create_worker_request(
+            conn,
+            mapping=mapping,
+            request_type="research",
+            source_event_id=event_id,
+        )
         message = _material_confirmed_message()
         material_status = "confirmed"
         send_result = _post_slack_message(channel_id, message)
@@ -834,7 +1224,7 @@ def _handle_material_text_event(
             action="slack.material_collection_confirmed",
             workflow_id=mapping["workflow_id"],
             target_id=mapping["id"],
-            metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "dry_run": bool(send_result.get("dry_run"))},
+            metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "worker_request_id": worker_request["id"], "dry_run": bool(send_result.get("dry_run"))},
         )
 
     wf = conn.execute("SELECT current_stage_id, assignee FROM workflow_instances WHERE id=?", (mapping["workflow_id"],)).fetchone()
@@ -866,6 +1256,19 @@ def _handle_message_files_event(conn: sqlite3.Connection, *, payload: dict[str, 
     ).fetchone()
     if not mapping:
         return {"ok": True, "ignored": True, "reason": "unmapped_channel", "event_type": "message", "channel_id": channel_id}
+
+    review_response = _handle_review_reply_event(
+        conn,
+        mapping=mapping,
+        event=event,
+        files=files,
+        event_id=event_id,
+        team_id=team_id,
+        channel_id=channel_id,
+    )
+    if review_response is not None:
+        return review_response
+
     if not files:
         return _handle_material_text_event(
             conn,
@@ -1194,6 +1597,123 @@ def _handle_slack_event(payload: dict[str, Any], request: Request, body: bytes) 
             error=response.get("reason", "") if send_failed else "",
         )
         return response
+
+
+def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
+    request_id = str(payload.get("request_id") or "").strip()
+    workflow_id = str(payload.get("workflow_id") or "").strip()
+    worker_request = None
+    if request_id:
+        worker_request = conn.execute("SELECT * FROM planning_worker_requests WHERE id=?", (request_id,)).fetchone()
+        if not worker_request:
+            raise HTTPException(404, "Worker request not found")
+        workflow_id = worker_request["workflow_id"]
+    if not workflow_id:
+        raise HTTPException(400, "workflow_id is required")
+    wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (workflow_id,)).fetchone()
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    mapping = _mapping_for_workflow(conn, workflow_id)
+    if not mapping:
+        raise HTTPException(404, "Slack mapping not found")
+
+    status = str(payload.get("status") or "succeeded").strip().lower()
+    if status not in {"succeeded", "completed", "success"}:
+        now = _now()
+        if worker_request:
+            conn.execute(
+                "UPDATE planning_worker_requests SET status=?, payload_json=?, updated_at=? WHERE id=?",
+                ("failed", worker_request["payload_json"], now, worker_request["id"]),
+            )
+        error_message = str(payload.get("error") or payload.get("message") or "worker_failed").strip()
+        message = f"자료조사 worker 실행 중 오류가 발생했습니다. 기획팀 임팀장이 확인 후 다시 안내드리겠습니다. ({error_message})"
+        send_result = _post_slack_message(mapping["channel_id"], message)
+        _record_slack_activity(
+            conn,
+            action="slack.worker_result_failed",
+            workflow_id=workflow_id,
+            target_id=request_id or None,
+            metadata={
+                "status": status,
+                "error": error_message,
+                "payload": payload,
+                "message_ts": send_result.get("ts") or "",
+                "dry_run": bool(send_result.get("dry_run")),
+            },
+        )
+        return {
+            "ok": bool(send_result.get("sent")),
+            "workflow_id": workflow_id,
+            "request_id": request_id,
+            "status": "failed",
+            "message": message,
+            "message_sent": bool(send_result.get("sent")),
+            "message_ts": send_result.get("ts") or "",
+        }
+
+    title = str(payload.get("title") or f"{_workflow_company_name(wf)} 자료조사 결과").strip()
+    content = str(payload.get("content") or payload.get("report_markdown") or "").strip()
+    if not content:
+        content = json.dumps(payload.get("result") or {}, ensure_ascii=False, indent=2)
+    artifact_id = _create_research_report_artifact(conn, workflow_id=workflow_id, title=title, content=content)
+    now = _now()
+    result_id = _uuid("wres_")
+    conn.execute(
+        """INSERT INTO planning_worker_results
+           (id, request_id, workflow_id, result_type, artifact_id, payload_json, created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (result_id, request_id or None, workflow_id, "research_report", artifact_id, json.dumps(payload, ensure_ascii=False), now),
+    )
+    if worker_request:
+        conn.execute(
+            "UPDATE planning_worker_requests SET status='completed', updated_at=?, completed_at=? WHERE id=?",
+            (now, now, worker_request["id"]),
+        )
+    _transition_planning_stage(
+        conn,
+        workflow_id,
+        STAGE_USER_REVIEW_WAITING,
+        assignee=PLANNING_ASSIGNEE,
+        note="Worker result received",
+        status="active",
+    )
+    message = _review_message_for_result(title)
+    send_result = _post_slack_message(mapping["channel_id"], message)
+    _record_slack_activity(
+        conn,
+        action="slack.worker_result_received",
+        workflow_id=workflow_id,
+        target_id=result_id,
+        artifact_id=artifact_id,
+        metadata={
+            "request_id": request_id,
+            "artifact_id": artifact_id,
+            "message_ts": send_result.get("ts") or "",
+            "dry_run": bool(send_result.get("dry_run")),
+        },
+    )
+    wf_after = conn.execute("SELECT current_stage_id, assignee, status FROM workflow_instances WHERE id=?", (workflow_id,)).fetchone()
+    response = {
+        "ok": bool(send_result.get("sent")),
+        "result_id": result_id,
+        "request_id": request_id,
+        "workflow_id": workflow_id,
+        "artifact_id": artifact_id,
+        "current_stage_id": wf_after["current_stage_id"] if wf_after else STAGE_USER_REVIEW_WAITING,
+        "assignee": wf_after["assignee"] if wf_after else PLANNING_ASSIGNEE,
+        "message": message,
+        "message_sent": bool(send_result.get("sent")),
+        "message_ts": send_result.get("ts") or "",
+    }
+    if not send_result.get("sent"):
+        response["reason"] = send_result.get("reason") or "send_failed"
+    return response
+
+
+@router.post("/worker/results")
+def worker_results(payload: dict[str, Any]):
+    with get_db() as conn:
+        return _record_worker_result(conn, payload)
 
 
 @router.post("/slack/events")

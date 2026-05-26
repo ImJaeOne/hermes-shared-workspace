@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS agent_types (
@@ -235,6 +235,29 @@ CREATE TABLE IF NOT EXISTS slack_material_collection_states (
     last_message_sent_at TEXT,
     last_error TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS planning_worker_requests (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+    mapping_id TEXT REFERENCES slack_channel_project_mappings(id) ON DELETE SET NULL,
+    request_type TEXT NOT NULL DEFAULT 'research',
+    status TEXT NOT NULL DEFAULT 'queued',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    source_event_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS planning_worker_results (
+    id TEXT PRIMARY KEY,
+    request_id TEXT REFERENCES planning_worker_requests(id) ON DELETE SET NULL,
+    workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+    result_type TEXT NOT NULL DEFAULT 'research_report',
+    artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
 );
 """
 
@@ -579,3 +602,36 @@ def _run_migrations(conn: sqlite3.Connection):
             "ON slack_workflow_source_files(status, created_at)"
         )
         _set_schema_version(conn, 7)
+        current = 7
+
+    if current < 8:
+        conn.execute("""CREATE TABLE IF NOT EXISTS planning_worker_requests (
+            id TEXT PRIMARY KEY,
+            workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+            mapping_id TEXT REFERENCES slack_channel_project_mappings(id) ON DELETE SET NULL,
+            request_type TEXT NOT NULL DEFAULT 'research',
+            status TEXT NOT NULL DEFAULT 'queued',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            source_event_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS planning_worker_results (
+            id TEXT PRIMARY KEY,
+            request_id TEXT REFERENCES planning_worker_requests(id) ON DELETE SET NULL,
+            workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+            result_type TEXT NOT NULL DEFAULT 'research_report',
+            artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )""")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_worker_requests_workflow "
+            "ON planning_worker_requests(workflow_id, request_type, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_worker_results_workflow "
+            "ON planning_worker_results(workflow_id, created_at)"
+        )
+        _set_schema_version(conn, 8)
