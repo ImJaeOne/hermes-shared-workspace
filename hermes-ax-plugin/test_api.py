@@ -352,6 +352,24 @@ slack_tables = {
 check("schema v6 creates Slack mapping tables", {"slack_channel_project_mappings", "slack_event_receipts"}.issubset(slack_tables), slack_tables)
 migration_conn.close()
 
+legacy_seed_conn = sqlite3.connect(":memory:")
+legacy_seed_conn.row_factory = sqlite3.Row
+legacy_seed_conn.executescript(db_schema.SCHEMA_SQL)
+legacy_seed_conn.execute(
+    "INSERT INTO agent_types (id, name, description, icon, color, config_json, created_at) VALUES (?,?,?,?,?,?,?)",
+    ("marketing", "Marketing Agent", "Legacy production seed", "Megaphone", "#f97316", "{}", "2025-01-01T00:00:00Z"),
+)
+plugin_api.seed_if_empty(legacy_seed_conn, plugin_api._now, lambda *args, **kwargs: None)
+planning_agent = legacy_seed_conn.execute("SELECT * FROM agent_types WHERE id='planning'").fetchone()
+planning_template = legacy_seed_conn.execute("SELECT * FROM workflow_templates WHERE id='planning_research_mvp_v1'").fetchone()
+planning_stage_count = legacy_seed_conn.execute("SELECT count(*) FROM stage_definitions WHERE template_id='planning_research_mvp_v1'").fetchone()[0]
+legacy_agent = legacy_seed_conn.execute("SELECT * FROM agent_types WHERE id='marketing'").fetchone()
+check("existing DB seed preserves legacy agent", legacy_agent is not None and legacy_agent["name"] == "Marketing Agent", dict(legacy_agent) if legacy_agent else "")
+check("existing DB seed adds planning agent", planning_agent is not None, "planning missing")
+check("existing DB seed adds planning template", planning_template is not None, "planning_research_mvp_v1 missing")
+check("existing DB seed adds planning stages", planning_stage_count == 6, f"got {planning_stage_count}")
+legacy_seed_conn.close()
+
 print("\n=== Artifacts ===")
 r = client.post("/artifacts", json={
     "workflow_id": wf_id,

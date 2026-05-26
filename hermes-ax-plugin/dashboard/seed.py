@@ -151,25 +151,20 @@ SEED_DATA: dict[str, Any] = {
 }
 
 
-def seed_if_empty(conn: sqlite3.Connection, now_fn: Callable[[], str], emit_event: Callable[..., None]):
-    row = conn.execute("SELECT count(*) as c FROM agent_types").fetchone()
-    if row["c"] > 0:
-        return
-
-    now = now_fn()
+def _seed_core_definitions(conn: sqlite3.Connection, now: str):
     for a in SEED_DATA["agents"]:
         conn.execute(
-            "INSERT INTO agent_types (id, name, description, icon, color, config_json, created_at) VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO agent_types (id, name, description, icon, color, config_json, created_at) VALUES (?,?,?,?,?,?,?)",
             (a["id"], a["name"], a["description"], a["icon"], a["color"], "{}", now),
         )
     for t in SEED_DATA["templates"]:
         conn.execute(
-            "INSERT INTO workflow_templates (id, agent_type_id, name, is_active, version, created_at) VALUES (?,?,?,1,1,?)",
+            "INSERT OR IGNORE INTO workflow_templates (id, agent_type_id, name, is_active, version, created_at) VALUES (?,?,?,1,1,?)",
             (t["id"], t["agent_type_id"], t["name"], now),
         )
     for s in SEED_DATA["stages"]:
         conn.execute(
-            "INSERT INTO stage_definitions (id, template_id, name, slug, stage_order, expected_artifacts, trigger_conditions, transition_mode, approval_roles, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO stage_definitions (id, template_id, name, slug, stage_order, expected_artifacts, trigger_conditions, transition_mode, approval_roles, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 s["id"],
                 s["template_id"],
@@ -186,9 +181,20 @@ def seed_if_empty(conn: sqlite3.Connection, now_fn: Callable[[], str], emit_even
 
     for sk in SEED_DATA.get("skills", []):
         conn.execute(
-            "INSERT INTO skills (id, name, description, content, agent_type_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO skills (id, name, description, content, agent_type_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
             (sk["id"], sk["name"], sk["description"], sk["content"], sk["agent_type_id"], now, now),
         )
+
+
+def seed_if_empty(conn: sqlite3.Connection, now_fn: Callable[[], str], emit_event: Callable[..., None]):
+    row = conn.execute("SELECT count(*) as c FROM agent_types").fetchone()
+    was_empty = row["c"] == 0
+
+    now = now_fn()
+    _seed_core_definitions(conn, now)
+
+    if not was_empty:
+        return
 
     seed_sample_data(conn, now, emit_event)
 
