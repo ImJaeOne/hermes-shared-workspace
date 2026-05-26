@@ -5,6 +5,8 @@ import type {
   Artifact,
   AXEvent,
   Comment,
+  PlanningWorkerRequest,
+  PlanningWorkerResult,
   Skill,
   SlackMaterialCollectionState,
   SlackWorkflowSourceFile,
@@ -91,6 +93,8 @@ export interface WorkflowDetailResponse extends WorkflowInstance {
   pending_approval?: ApprovalRequest | null;
   source_files?: SlackWorkflowSourceFile[];
   material_collection_state?: SlackMaterialCollectionState | null;
+  worker_requests?: PlanningWorkerRequest[];
+  worker_results?: PlanningWorkerResult[];
 }
 
 export interface UpdateWorkflowRequest {

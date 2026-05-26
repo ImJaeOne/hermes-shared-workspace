@@ -130,6 +130,29 @@ export interface SlackMaterialCollectionState {
   updated_at: string;
 }
 
+export interface PlanningWorkerRequest {
+  id: string;
+  workflow_id: string;
+  mapping_id: string | null;
+  request_type: "research" | "revision" | string;
+  status: "queued" | "completed" | "failed" | string;
+  payload_json: string;
+  source_event_id: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface PlanningWorkerResult {
+  id: string;
+  request_id: string | null;
+  workflow_id: string;
+  result_type: string;
+  artifact_id: string | null;
+  payload_json: string;
+  created_at: string;
+}
+
 export interface Artifact {
   id: string;
   workflow_id: string;
