@@ -9,28 +9,44 @@ plugin route itself.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 SLACK_EVENTS_PUBLIC_PATH = "/api/plugins/hermes-ax/slack/events"
-PUBLIC_PATH_LINE = f'    "{SLACK_EVENTS_PUBLIC_PATH}",\n'
-ANCHOR = '    "/api/dashboard/plugins",\n})'
-REPLACEMENT = '    "/api/dashboard/plugins",\n' + PUBLIC_PATH_LINE + '})'
 DEFAULT_WEB_SERVER_PATH = Path("/opt/hermes-agent/hermes_cli/web_server.py")
+PUBLIC_API_BLOCK_RE = re.compile(
+    r"(?P<header>^_PUBLIC_API_PATHS[^\n]*frozenset\(\{\n)"
+    r"(?P<body>.*?)"
+    r"(?P<footer>^[ \t]*\}\)[^\n]*\n?)",
+    re.MULTILINE | re.DOTALL,
+)
+PUBLIC_PATH_LINE_RE = re.compile(r'^(?P<indent>[ \t]*)"[^"]+",[ \t]*(?:#.*)?$', re.MULTILINE)
 
 
 def patch_public_api_allowlist_text(text: str) -> str:
     """Return web_server.py text with the Slack webhook path allowlisted.
 
-    The patch is intentionally narrow and fail-fast: only the exact Slack Events
-    endpoint is made public, and an upstream layout change fails the Docker build
-    rather than silently shipping a blocked webhook.
+    The patch stays narrow: only the exact Slack Events endpoint is made
+    public.  Instead of depending on one neighboring allowlist entry being the
+    final item, locate the _PUBLIC_API_PATHS frozenset block and append the
+    endpoint before the block closes. If the block shape changes enough that we
+    cannot identify it safely, fail the Docker build.
     """
-    if PUBLIC_PATH_LINE in text:
+    if SLACK_EVENTS_PUBLIC_PATH in text:
         return text
-    if ANCHOR not in text:
-        raise RuntimeError("Hermes Dashboard public API allowlist anchor not found")
-    return text.replace(ANCHOR, REPLACEMENT, 1)
+
+    matches = list(PUBLIC_API_BLOCK_RE.finditer(text))
+    if len(matches) != 1:
+        raise RuntimeError("Hermes Dashboard public API allowlist block not found")
+
+    match = matches[0]
+    body = match.group("body")
+    path_line_match = PUBLIC_PATH_LINE_RE.search(body)
+    indent = path_line_match.group("indent") if path_line_match else "    "
+    public_path_line = f'{indent}"{SLACK_EVENTS_PUBLIC_PATH}",\n'
+    patched_block = f'{match.group("header")}{body}{public_path_line}{match.group("footer")}'
+    return text[:match.start()] + patched_block + text[match.end():]
 
 
 def patch_file(path: Path) -> bool:

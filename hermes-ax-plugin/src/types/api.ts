@@ -6,6 +6,8 @@ import type {
   AXEvent,
   Comment,
   Skill,
+  SlackMaterialCollectionState,
+  SlackWorkflowSourceFile,
   StageDefinition,
   StageTransition,
   WorkflowDefinition,
@@ -87,6 +89,8 @@ export interface WorkflowDetailResponse extends WorkflowInstance {
   transitions: StageTransition[];
   activity_logs?: ActivityLog[];
   pending_approval?: ApprovalRequest | null;
+  source_files?: SlackWorkflowSourceFile[];
+  material_collection_state?: SlackMaterialCollectionState | null;
 }
 
 export interface UpdateWorkflowRequest {

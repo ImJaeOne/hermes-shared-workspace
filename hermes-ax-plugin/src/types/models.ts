@@ -94,6 +94,42 @@ export interface WorkflowInstance {
   current_stage_order?: number;
 }
 
+export type SlackSourceFileStatus = "stored" | "rejected";
+
+export interface SlackWorkflowSourceFile {
+  id: string;
+  mapping_id: string;
+  workflow_id: string;
+  artifact_id: string | null;
+  slack_file_id: string;
+  filename: string;
+  title: string;
+  mimetype: string;
+  size: number;
+  url_private: string;
+  url_private_download: string;
+  uploaded_user: string;
+  uploaded_ts: string;
+  status: SlackSourceFileStatus;
+  rejection_reason: string;
+  metadata_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SlackMaterialCollectionState {
+  workflow_id: string;
+  mapping_id: string;
+  status: string;
+  source_file_count: number;
+  rejected_file_count: number;
+  last_message: string;
+  last_message_ts: string;
+  last_message_sent_at: string | null;
+  last_error: string;
+  updated_at: string;
+}
+
 export interface Artifact {
   id: string;
   workflow_id: string;
