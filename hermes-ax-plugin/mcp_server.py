@@ -20,10 +20,9 @@ from common import _now, _uuid
 from plugin_api import (
     get_db,
     init_db,
-    rows_to_list,
-    row_to_dict,
     _emit_event,
 )
+from rows import rows_to_list, row_to_dict
 
 mcp = FastMCP("hermes-ax")
 
