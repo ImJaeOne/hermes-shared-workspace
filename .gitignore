@@ -1,2 +1,55 @@
-# Local NotebookLM auth capture environment
-hermes-ax-plugin/.venv-notebooklm-auth/
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Dependencies
+node_modules/
+.venv/
+.venv-notebooklm-auth/
+venv/
+__pycache__/
+*.py[cod]
+
+# Build outputs
+**/dist/
+**/build/
+**/.next/
+**/.vite/
+
+# Hermes / AX runtime state
+.hermes/
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/logs/
+**/artifacts/
+**/uploads/
+
+# Keep frontend source components tracked
+!hermes-ax-plugin/src/components/artifacts/
+!hermes-ax-plugin/src/components/artifacts/**
+
+# Docker / local runtime scratch
+.tmp/
+tmp/
+.cache/
+
+# Test / coverage
+coverage/
+.coverage
+.pytest_cache/
