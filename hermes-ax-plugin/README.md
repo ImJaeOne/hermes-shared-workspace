@@ -271,7 +271,9 @@ source .venv-notebooklm-auth/bin/activate
 pip install playwright
 python -m playwright install chromium
 
-python3 - <<'PY'
+AUTH_CAPTURE_SCRIPT=$(mktemp "${TMPDIR:-/tmp}/notebooklm-auth.XXXXXX.py")
+trap 'rm -f "$AUTH_CAPTURE_SCRIPT"' EXIT
+cat > "$AUTH_CAPTURE_SCRIPT" <<'PY'
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -289,7 +291,12 @@ with sync_playwright() as p:
 
 print(str(out))
 PY
+python3 "$AUTH_CAPTURE_SCRIPT"
+rm -f "$AUTH_CAPTURE_SCRIPT"
+trap - EXIT
 ```
+
+`python3 - <<'PY'`처럼 Python 코드를 표준입력 heredoc으로 바로 실행하면, `input()`이 터미널 입력을 읽지 못해 `EOFError: EOF when reading a line`이 납니다. 반드시 위처럼 임시 `.py` 파일로 저장한 뒤 실행합니다.
 
 로컬 Docker에서 실제 NotebookLM을 붙여 확인할 때는 host 파일을 컨테이너 내부 경로로 read-only mount합니다.
 
