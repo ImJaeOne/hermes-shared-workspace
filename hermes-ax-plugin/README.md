@@ -243,6 +243,127 @@ Slack App의 Request URL은 trailing slash 없이 아래처럼 설정합니다.
 https://<railway-domain>/api/plugins/hermes-ax/slack/events
 ```
 
+### 9. 자료조사 worker 실행 엔진
+
+Issue #24 기준 자료조사 worker는 Enterprise API를 전제로 하지 않고, adapter 방식으로 실행됩니다. Slack 사용자는 자료를 올리고 결과를 받는 흐름만 사용하며, NotebookLM/MCP/쿠키 같은 설정 용어는 사용자-facing 메시지에 노출하지 않습니다.
+
+| 환경변수 | 기본값 | 용도 |
+|----------|--------|------|
+| `HERMES_AX_RESEARCH_ENGINE` | `mock` | `mock`, `notebooklm_py`, `gemini_rag` 중 선택 |
+| `HERMES_AX_RESEARCH_FALLBACK_ENGINE` | `mock` | 기본 엔진 실패/미설정 시 대체 엔진 |
+| `HERMES_AX_RESEARCH_SKILL_ID` | `skill_001` | AX DB `skills` 테이블에서 로드할 자료조사 프롬프트 |
+| `HERMES_AX_NOTEBOOKLM_AUTH_JSON` | 없음 | `notebooklm-py` storage state JSON secret 또는 파일 경로 |
+| `HERMES_AX_NOTEBOOKLM_AUTH_PATH` | 없음 | `notebooklm-py` storage state 파일 경로 |
+| `HERMES_AX_NOTEBOOKLM_PROFILE` | 없음 | `notebooklm-py` profile 이름 |
+| `HERMES_AX_NOTEBOOKLM_KEEP_NOTEBOOKS` | `false` | 실행 후 NotebookLM 임시 노트북 보존 여부 |
+| `HERMES_AX_NOTEBOOKLM_TIMEOUT` | `60` | NotebookLM 호출 timeout 초 |
+
+`notebooklm_py` 엔진은 Google 계정 이메일/비밀번호를 환경변수에 넣지 않습니다. 대신 전용 Google 계정으로 한 번 로그인해 만든 browser storage state JSON을 secret으로 넣습니다. `/data/secrets/notebooklm-storage-state.json` 같은 값은 컨테이너 내부 예시 경로일 뿐 자동으로 존재하지 않으므로, 아래처럼 직접 만들고 Railway secret 또는 Docker volume mount로 전달해야 합니다.
+
+로컬에서 storage state JSON을 만드는 예:
+
+```bash
+mkdir -p /Users/LIM/secrets/innodive-automation
+cd /Users/LIM/workspace/innodive-automation/hermes-ax-plugin
+
+python3 -m venv .venv-notebooklm-auth
+source .venv-notebooklm-auth/bin/activate
+pip install playwright
+python -m playwright install chromium
+
+python3 - <<'PY'
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+out = Path('/Users/LIM/secrets/innodive-automation/notebooklm-storage-state.json')
+out.parent.mkdir(parents=True, exist_ok=True)
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=False)
+    context = browser.new_context()
+    page = context.new_page()
+    page.goto('https://notebooklm.google.com/', wait_until='domcontentloaded')
+    input('브라우저에서 NotebookLM 전용 Google 계정으로 로그인한 뒤 NotebookLM 홈이 보이면 Enter를 누르세요: ')
+    context.storage_state(path=str(out))
+    browser.close()
+
+print(str(out))
+PY
+```
+
+로컬 Docker에서 실제 NotebookLM을 붙여 확인할 때는 host 파일을 컨테이너 내부 경로로 read-only mount합니다.
+
+```bash
+-v /Users/LIM/secrets/innodive-automation/notebooklm-storage-state.json:/data/secrets/notebooklm-storage-state.json:ro \
+-e HERMES_AX_RESEARCH_ENGINE=notebooklm_py \
+-e HERMES_AX_RESEARCH_FALLBACK_ENGINE=mock \
+-e HERMES_AX_NOTEBOOKLM_AUTH_PATH=/data/secrets/notebooklm-storage-state.json
+```
+
+Railway에서는 파일 경로를 만들기 어렵다면 `HERMES_AX_NOTEBOOKLM_AUTH_JSON`에 JSON 파일 내용 전체를 secret env로 넣는 방식이 가장 단순합니다. `HERMES_AX_NOTEBOOKLM_AUTH_PATH`를 쓰려면 해당 파일이 실제 배포 컨테이너 내부 경로에 존재해야 합니다. 이 JSON은 로그인 세션이므로 비밀번호급 secret으로 취급하고 Git, PR, Slack, artifact, activity log에 남기지 않습니다.
+
+배포 환경에서 NotebookLM 인증 설정이 실제로 들어갔는지는 secret 값을 출력하지 말고 존재 여부와 JSON/path 유효성만 확인합니다. Railway UI에서는 대상 service의 `Variables`에서 key 존재 여부를 확인하고, 런타임 컨테이너에서는 `railway ssh` 접속 후 아래를 실행합니다.
+
+```bash
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+keys = [
+    'HERMES_AX_RESEARCH_ENGINE',
+    'HERMES_AX_RESEARCH_FALLBACK_ENGINE',
+    'HERMES_AX_NOTEBOOKLM_AUTH_JSON',
+    'HERMES_AX_NOTEBOOKLM_AUTH_PATH',
+    'HERMES_AX_NOTEBOOKLM_PROFILE',
+]
+for key in keys:
+    value = os.getenv(key, '')
+    if key.endswith('AUTH_JSON'):
+        print(key, 'present=', bool(value), 'length=', len(value))
+    else:
+        print(key, 'value=', value if value else '<unset>')
+
+auth_json = os.getenv('HERMES_AX_NOTEBOOKLM_AUTH_JSON', '').strip()
+if auth_json:
+    try:
+        json.loads(auth_json)
+        print('AUTH_JSON_valid_json=True')
+    except Exception as exc:
+        print('AUTH_JSON_valid_json=False', type(exc).__name__)
+
+auth_path = os.getenv('HERMES_AX_NOTEBOOKLM_AUTH_PATH', '').strip()
+if auth_path:
+    p = Path(auth_path)
+    print('AUTH_PATH_exists=', p.exists())
+    print('AUTH_PATH_is_file=', p.is_file())
+    print('AUTH_PATH_size=', p.stat().st_size if p.exists() else 0)
+    if p.is_file():
+        try:
+            json.loads(p.read_text())
+            print('AUTH_PATH_valid_json=True')
+        except Exception as exc:
+            print('AUTH_PATH_valid_json=False', type(exc).__name__)
+PY
+```
+
+해석 기준:
+
+- `HERMES_AX_RESEARCH_ENGINE=mock` 또는 unset이면 NotebookLM을 쓰지 않고 mock 엔진으로 실행됩니다.
+- `HERMES_AX_RESEARCH_ENGINE=notebooklm_py`인데 `AUTH_JSON`/`AUTH_PATH`/`PROFILE`이 모두 없으면 실제 NotebookLM 실행은 불가능하고 fallback이 있으면 mock으로 넘어갑니다.
+- `AUTH_JSON_present=True`와 `AUTH_JSON_valid_json=True`이면 Railway secret 방식이 최소 형식상 들어간 것입니다.
+- `AUTH_PATH_exists=True`, `AUTH_PATH_is_file=True`, `AUTH_PATH_valid_json=True`이면 컨테이너 내부 파일 경로 방식이 최소 형식상 들어간 것입니다.
+- `AUTH_PATH`와 `AUTH_JSON`을 둘 다 설정하면 현재 구현은 `AUTH_PATH`를 먼저 사용하므로, 파일 경로가 틀린 상태라면 `AUTH_JSON`이 있어도 실패할 수 있습니다. Railway에서는 보통 둘 중 하나만 쓰고, 가능하면 `AUTH_JSON` 방식을 권장합니다.
+
+자료 확인 답변이 들어오면 `planning_worker_requests`에 queued request가 쌓입니다. 운영/테스트에서는 아래 endpoint로 실행할 수 있습니다.
+
+```text
+POST /api/plugins/hermes-ax/worker/requests/<request_id>/run
+POST /api/plugins/hermes-ax/worker/run-queued?limit=1
+```
+
+local/CI 검증은 외부 인증 없이 mock adapter로 통과해야 합니다. `HERMES_AX_RESEARCH_ENGINE=notebooklm_py`인데 인증 정보나 패키지가 없으면 사용자에게는 비기술적 연결 문제로 안내하고, fallback이 설정되어 있으면 mock 또는 후속 `gemini_rag` 경로로 계속 진행합니다.
+
 ## Development
 
 ### 프론트엔드 빌드

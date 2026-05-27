@@ -20,6 +20,7 @@ try:
     from .stats_api import router as stats_router
     from .stage_settings_api import router as stage_settings_router
     from .workflows_api import router as workflows_router
+    from .worker_api import router as worker_router
     from .skills_api import router as skills_router
     from .slack_onboarding_api import router as slack_onboarding_router
     from .seed import seed_if_empty
@@ -46,6 +47,7 @@ except ImportError:
     from stats_api import router as stats_router
     from stage_settings_api import router as stage_settings_router
     from workflows_api import router as workflows_router
+    from worker_api import router as worker_router
     from skills_api import router as skills_router
     from slack_onboarding_api import router as slack_onboarding_router
     from seed import seed_if_empty
@@ -59,6 +61,7 @@ router.include_router(events_router)
 router.include_router(stats_router)
 router.include_router(stage_settings_router)
 router.include_router(workflows_router)
+router.include_router(worker_router)
 router.include_router(slack_onboarding_router)
 
 

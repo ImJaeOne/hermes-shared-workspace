@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 try:
     from .activity import _record_activity
     from .artifact_storage import get_artifact_storage
+    from .auth_sessions import _require_authenticated_user
     from .common import _now, _uuid
     from .db import get_db
     from .events import _emit_event
@@ -26,6 +27,7 @@ try:
 except ImportError:
     from activity import _record_activity
     from artifact_storage import get_artifact_storage
+    from auth_sessions import _require_authenticated_user
     from common import _now, _uuid
     from db import get_db
     from events import _emit_event
@@ -77,6 +79,27 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def _normalize_research_engine(value: str | None, default: str = "mock") -> str:
+    engine = (value or default or "mock").strip().lower().replace("-", "_")
+    return engine or default
+
+
+def _research_engine_name() -> str:
+    return _normalize_research_engine(os.getenv("HERMES_AX_RESEARCH_ENGINE"), "mock")
+
+
+def _research_fallback_engine_name() -> str:
+    return _normalize_research_engine(os.getenv("HERMES_AX_RESEARCH_FALLBACK_ENGINE"), "mock")
+
+
+def _research_prompt_metadata(conn: sqlite3.Connection) -> dict[str, str]:
+    skill_id = (os.getenv("HERMES_AX_RESEARCH_SKILL_ID") or "skill_001").strip() or "skill_001"
+    row = conn.execute("SELECT id, name, updated_at FROM skills WHERE id=?", (skill_id,)).fetchone()
+    if not row:
+        return {"source": "skills", "skill_id": skill_id, "name": "", "version": ""}
+    return {"source": "skills", "skill_id": row["id"], "name": row["name"], "version": row["updated_at"]}
 
 
 def _slack_max_files_per_message() -> int:
@@ -863,6 +886,9 @@ def _build_worker_payload(
         "project_key": metadata.get("project_key", ""),
         "requested_by": "planning_lead_orchestrator",
         "source_event_id": source_event_id,
+        "research_engine": _research_engine_name(),
+        "fallback_engine": _research_fallback_engine_name(),
+        "prompt": _research_prompt_metadata(conn),
         "slack": {
             "team_id": mapping["team_id"],
             "channel_id": mapping["channel_id"],
@@ -1654,15 +1680,18 @@ def _handle_slack_event(payload: dict[str, Any], request: Request, body: bytes) 
 
 def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
     request_id = str(payload.get("request_id") or "").strip()
-    workflow_id = str(payload.get("workflow_id") or "").strip()
-    worker_request = None
-    if request_id:
-        worker_request = conn.execute("SELECT * FROM planning_worker_requests WHERE id=?", (request_id,)).fetchone()
-        if not worker_request:
-            raise HTTPException(404, "Worker request not found")
-        workflow_id = worker_request["workflow_id"]
-    if not workflow_id:
+    if not request_id:
+        raise HTTPException(400, "request_id is required")
+    payload_workflow_id = str(payload.get("workflow_id") or "").strip()
+    if not payload_workflow_id:
         raise HTTPException(400, "workflow_id is required")
+
+    worker_request = conn.execute("SELECT * FROM planning_worker_requests WHERE id=?", (request_id,)).fetchone()
+    if not worker_request:
+        raise HTTPException(404, "Worker request not found")
+    workflow_id = worker_request["workflow_id"]
+    if payload_workflow_id != workflow_id:
+        raise HTTPException(400, "workflow_id does not match worker request")
     wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (workflow_id,)).fetchone()
     if not wf:
         raise HTTPException(404, "Workflow not found")
@@ -1671,21 +1700,32 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
         raise HTTPException(404, "Slack mapping not found")
 
     status = str(payload.get("status") or "succeeded").strip().lower()
-    if status not in {"succeeded", "completed", "success"}:
-        now = _now()
-        if worker_request:
-            conn.execute(
-                "UPDATE planning_worker_requests SET status=?, payload_json=?, updated_at=? WHERE id=?",
-                ("failed", worker_request["payload_json"], now, worker_request["id"]),
-            )
+    terminal_status = "completed" if status in {"succeeded", "completed", "success"} else "failed"
+    now = _now()
+    if terminal_status == "completed":
+        claimed = conn.execute(
+            "UPDATE planning_worker_requests SET status='completed', updated_at=?, completed_at=? WHERE id=? AND status='running'",
+            (now, now, request_id),
+        )
+    else:
+        claimed = conn.execute(
+            "UPDATE planning_worker_requests SET status='failed', updated_at=? WHERE id=? AND status='running'",
+            (now, request_id),
+        )
+    if claimed.rowcount != 1:
+        latest = conn.execute("SELECT status FROM planning_worker_requests WHERE id=?", (request_id,)).fetchone()
+        latest_status = latest["status"] if latest else "unavailable"
+        raise HTTPException(409, f"Worker request is {latest_status}; expected running")
+
+    if terminal_status == "failed":
         error_message = str(payload.get("error") or payload.get("message") or "worker_failed").strip()
-        message = f"자료조사 worker 실행 중 오류가 발생했습니다. 기획팀 임팀장이 확인 후 다시 안내드리겠습니다. ({error_message})"
+        message = "자료조사 작업 중 오류가 발생했습니다. 기획팀 임팀장이 확인 후 다시 안내드리겠습니다."
         send_result = _post_slack_message(mapping["channel_id"], message)
         _record_slack_activity(
             conn,
             action="slack.worker_result_failed",
             workflow_id=workflow_id,
-            target_id=request_id or None,
+            target_id=request_id,
             metadata={
                 "status": status,
                 "error": error_message,
@@ -1717,11 +1757,6 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
            VALUES (?,?,?,?,?,?,?)""",
         (result_id, request_id or None, workflow_id, "research_report", artifact_id, json.dumps(payload, ensure_ascii=False), now),
     )
-    if worker_request:
-        conn.execute(
-            "UPDATE planning_worker_requests SET status='completed', updated_at=?, completed_at=? WHERE id=?",
-            (now, now, worker_request["id"]),
-        )
     _transition_planning_stage(
         conn,
         workflow_id,
@@ -1764,8 +1799,9 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
 
 
 @router.post("/worker/results")
-def worker_results(payload: dict[str, Any]):
+def worker_results(payload: dict[str, Any], request: Request):
     with get_db() as conn:
+        _require_authenticated_user(conn, request)
         return _record_worker_result(conn, payload)
 
 

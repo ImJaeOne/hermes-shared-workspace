@@ -1,4 +1,5 @@
 """Quick integration test for plugin_api.py — runs without a live server."""
+import asyncio
 import hashlib
 import hmac
 import importlib
@@ -34,6 +35,7 @@ from scripts.patch_hermes_dashboard_public_api import (
 import db_schema
 import plugin_api
 import slack_onboarding_api
+import artifact_storage
 importlib.reload(plugin_api)
 
 app = FastAPI()
@@ -55,6 +57,103 @@ def check(label, condition, detail=""):
     else:
         failed += 1
         print(f"  FAIL  {label} — {detail}")
+
+
+print("\n=== Research Adapters ===")
+try:
+    import research_adapters
+except Exception as exc:
+    research_adapters = None
+    check("research adapters module import", False, repr(exc))
+else:
+    check("research adapters module import", True)
+
+if research_adapters:
+    old_engine = os.environ.get("HERMES_AX_RESEARCH_ENGINE")
+    old_fallback = os.environ.get("HERMES_AX_RESEARCH_FALLBACK_ENGINE")
+    old_auth_json = os.environ.get("HERMES_AX_NOTEBOOKLM_AUTH_JSON")
+    old_auth_path = os.environ.get("HERMES_AX_NOTEBOOKLM_AUTH_PATH")
+    old_profile = os.environ.get("HERMES_AX_NOTEBOOKLM_PROFILE")
+    try:
+        os.environ["HERMES_AX_RESEARCH_ENGINE"] = "notebooklm_py"
+        os.environ["HERMES_AX_RESEARCH_FALLBACK_ENGINE"] = "mock"
+        os.environ.pop("HERMES_AX_NOTEBOOKLM_AUTH_JSON", None)
+        os.environ.pop("HERMES_AX_NOTEBOOKLM_AUTH_PATH", None)
+        os.environ.pop("HERMES_AX_NOTEBOOKLM_PROFILE", None)
+        fallback_result = research_adapters.run_research_adapter(
+            {
+                "task_type": "initial_research",
+                "company_name": "FallbackCo",
+                "source_files": [{"filename": "intro.md", "title": "소개 자료", "artifact": {"content": "회사 소개"}}],
+            },
+            {"skill_id": "skill_001", "name": "기획 자료조사 결과 정리", "content": "핵심 요약 중심으로 정리"},
+        )
+        check("NotebookLM adapter falls back to mock without auth", fallback_result.engine == "mock" and fallback_result.metadata.get("fallback_from") == "notebooklm_py", fallback_result)
+        check("NotebookLM fallback keeps user-safe diagnostics", "NotebookLM" not in fallback_result.metadata.get("safe_message", "") and "쿠키" not in fallback_result.metadata.get("safe_message", ""), fallback_result.metadata)
+    finally:
+        for key, value in {
+            "HERMES_AX_RESEARCH_ENGINE": old_engine,
+            "HERMES_AX_RESEARCH_FALLBACK_ENGINE": old_fallback,
+            "HERMES_AX_NOTEBOOKLM_AUTH_JSON": old_auth_json,
+            "HERMES_AX_NOTEBOOKLM_AUTH_PATH": old_auth_path,
+            "HERMES_AX_NOTEBOOKLM_PROFILE": old_profile,
+        }.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    class FakeNotebookSources:
+        def __init__(self):
+            self.files = []
+            self.texts = []
+
+        async def add_file(self, notebook_id, file_path, **kwargs):
+            self.files.append({"notebook_id": notebook_id, "file_path": file_path, **kwargs})
+
+        async def add_text(self, notebook_id, title, content, **kwargs):
+            self.texts.append({"notebook_id": notebook_id, "title": title, "content": content, **kwargs})
+
+    class FakeNotebookClient:
+        def __init__(self):
+            self.sources = FakeNotebookSources()
+
+    storage = artifact_storage.get_artifact_storage()
+    stored = storage.write_bytes(
+        workflow_id="wf_adapter_storage",
+        stage_id="p_material_waiting",
+        artifact_id="art_adapter_pdf",
+        content=b"%PDF-1.7\nsource bytes",
+        mime_type="application/pdf",
+        original_filename="source.pdf",
+    )
+    fake_client = FakeNotebookClient()
+    asyncio.run(
+        research_adapters.NotebookLmPyResearchAdapter()._add_sources(
+            fake_client,
+            "notebook-1",
+            {
+                "source_files": [
+                    {
+                        "filename": "source.pdf",
+                        "artifact": {
+                            "content": "",
+                            "file_path": stored.file_path,
+                            "storage_backend": stored.storage_backend,
+                            "storage_key": stored.storage_key,
+                            "mime_type": stored.mime_type,
+                        },
+                    }
+                ]
+            },
+        )
+    )
+    expected_file_path = str(storage.resolve_path(stored.storage_key))
+    check(
+        "NotebookLM adapter resolves local artifact storage file",
+        len(fake_client.sources.files) == 1 and fake_client.sources.files[0]["file_path"] == expected_file_path and not fake_client.sources.texts,
+        {"files": fake_client.sources.files, "texts": fake_client.sources.texts, "expected": expected_file_path},
+    )
 
 
 class FakeHTTPResponse:
@@ -93,6 +192,14 @@ def fetch_worker_request(conn, workflow_id: str, request_type: str, latest: bool
         ).fetchone()
     except sqlite3.OperationalError:
         return None
+
+
+def mark_worker_request_running(request_id: str):
+    with plugin_api.get_db() as conn:
+        conn.execute(
+            "UPDATE planning_worker_requests SET status='running', updated_at=? WHERE id=?",
+            (plugin_api._now(), request_id),
+        )
 
 
 def slack_headers(payload: dict, signing_key: str = "test-slack-signing-secret") -> tuple[bytes, dict[str, str]]:
@@ -631,20 +738,18 @@ with plugin_api.get_db() as conn:
     check("Slack material confirmation creates worker request", research_request is not None and research_request["status"] == "queued", dict(research_request) if research_request else "")
     check("Worker research payload is standardized", research_payload.get("schema_version") == 1 and research_payload.get("task_type") == "initial_research" and research_payload.get("workflow_id") == slack_wf_id and research_payload.get("stage_id") == "p_research_running", research_payload)
     check("Worker research payload includes Slack and source files", research_payload.get("slack", {}).get("channel_id") == "CLOCALTEST" and len(research_payload.get("source_files", [])) == 2, research_payload)
+    check("Worker research payload includes prompt and engine metadata", research_payload.get("research_engine") == "mock" and research_payload.get("prompt", {}).get("source") == "skills" and research_payload.get("prompt", {}).get("skill_id"), research_payload)
 
 research_request_id = research_request["id"] if research_request else "missing-research-request"
-r = client.post("/worker/results", json={
-    "request_id": research_request_id,
-    "workflow_id": slack_wf_id,
-    "status": "succeeded",
-    "title": "테스트전자 자료조사 결과",
-    "content": "## 테스트전자 자료조사 결과\n\n- 핵심 요약\n- 시장/고객 맥락\n- 콘텐츠 기획 포인트",
-})
-check("Worker result receipt status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+r = client.post(f"/worker/requests/{research_request_id}/run")
+check("Worker request runner status", r.status_code == 200, f"got {r.status_code}: {r.text}")
 worker_result = r.json()
-check("Worker result receipt returns artifact", worker_result.get("artifact_id", "").startswith("art_"), str(worker_result))
-check("Worker result posts Slack review message", worker_result.get("message_sent") is True and "자료조사 결과" in worker_result.get("message", "") and "검토" in worker_result.get("message", ""), str(worker_result))
-check("Worker result moves workflow to review", worker_result.get("current_stage_id") == "p_user_review_waiting", str(worker_result))
+check("Worker request runner used mock engine", worker_result.get("engine_used") == "mock" and worker_result.get("request_status") == "completed", str(worker_result))
+check("Worker request runner returns artifact", worker_result.get("artifact_id", "").startswith("art_"), str(worker_result))
+check("Worker request runner posts Slack review message", worker_result.get("message_sent") is True and "자료조사 결과" in worker_result.get("message", "") and "검토" in worker_result.get("message", ""), str(worker_result))
+check("Worker request runner moves workflow to review", worker_result.get("current_stage_id") == "p_user_review_waiting", str(worker_result))
+duplicate_run = client.post(f"/worker/requests/{research_request_id}/run")
+check("Worker request runner prevents duplicate execution", duplicate_run.status_code == 409, f"got {duplicate_run.status_code}: {duplicate_run.text}")
 with plugin_api.get_db() as conn:
     report_artifact = conn.execute("SELECT * FROM artifacts WHERE workflow_id=? AND artifact_type='research_report' AND stage_id='p_user_review_waiting' ORDER BY created_at DESC LIMIT 1", (slack_wf_id,)).fetchone()
     wf_review = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (slack_wf_id,)).fetchone()
@@ -682,14 +787,43 @@ check("Revision workflow material positive shorthand starts worker", r.json().ge
 with plugin_api.get_db() as conn:
     revision_initial_request = fetch_worker_request(conn, revision_wf_id, "research", latest=False)
 revision_initial_request_id = revision_initial_request["id"] if revision_initial_request else "missing-revision-initial-request"
-r = client.post("/worker/results", json={
+revision_initial_result_payload = {
     "request_id": revision_initial_request_id,
     "workflow_id": revision_wf_id,
     "status": "succeeded",
     "title": "수정테스트 자료조사 결과",
     "content": "## 수정테스트 자료조사 결과\n\n초안입니다.",
+}
+r = client.post("/worker/results", json={
+    "workflow_id": revision_wf_id,
+    "status": "succeeded",
+    "title": "request_id 누락 결과",
+    "content": "request_id가 없어야 실패합니다.",
 })
+check("Worker result missing request_id rejected", r.status_code == 400, f"got {r.status_code}: {r.text}")
+r = client.post("/worker/results", json=revision_initial_result_payload)
+check("Worker result requires running request", r.status_code == 409, f"got {r.status_code}: {r.text}")
+mark_worker_request_running(revision_initial_request_id)
+r = client.post("/worker/results", json=revision_initial_result_payload)
 check("Revision workflow initial worker result status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+with plugin_api.get_db() as conn:
+    replay_artifact_count = conn.execute("SELECT count(*) FROM artifacts WHERE workflow_id=? AND artifact_type='research_report'", (revision_wf_id,)).fetchone()[0]
+    replay_result_count = conn.execute("SELECT count(*) FROM planning_worker_results WHERE request_id=?", (revision_initial_request_id,)).fetchone()[0]
+    replay_activity_count = conn.execute("SELECT count(*) FROM activity_logs WHERE workflow_id=? AND action='slack.worker_result_received'", (revision_wf_id,)).fetchone()[0]
+r = client.post("/worker/results", json=revision_initial_result_payload)
+check("Worker result replay rejected", r.status_code == 409, f"got {r.status_code}: {r.text}")
+with plugin_api.get_db() as conn:
+    replay_artifact_count_after = conn.execute("SELECT count(*) FROM artifacts WHERE workflow_id=? AND artifact_type='research_report'", (revision_wf_id,)).fetchone()[0]
+    replay_result_count_after = conn.execute("SELECT count(*) FROM planning_worker_results WHERE request_id=?", (revision_initial_request_id,)).fetchone()[0]
+    replay_activity_count_after = conn.execute("SELECT count(*) FROM activity_logs WHERE workflow_id=? AND action='slack.worker_result_received'", (revision_wf_id,)).fetchone()[0]
+check(
+    "Worker result replay creates no duplicate artifacts or messages",
+    replay_artifact_count_after == replay_artifact_count and replay_result_count_after == replay_result_count and replay_activity_count_after == replay_activity_count,
+    {
+        "before": (replay_artifact_count, replay_result_count, replay_activity_count),
+        "after": (replay_artifact_count_after, replay_result_count_after, replay_activity_count_after),
+    },
+)
 revision_text_payload = slack_message_text_payload("EvREVISIONTEXT1", "시장 규모와 경쟁사 비교를 더 보강해주세요.", channel_id="CREVTEST")
 revision_text_body, revision_text_headers = slack_headers(revision_text_payload)
 r = anon.post("/slack/events", content=revision_text_body, headers=revision_text_headers)
@@ -703,6 +837,7 @@ with plugin_api.get_db() as conn:
     check("Revision text worker request payload stored", revision_request is not None and revision_payload.get("task_type") == "revision" and "시장 규모" in revision_payload.get("revision", {}).get("instruction", ""), revision_payload)
     check("Revision text activity logged", revision_activity is not None, dict(revision_activity) if revision_activity else "")
 revision_request_id = revision_request["id"] if revision_request else "missing-revision-request"
+mark_worker_request_running(revision_request_id)
 r = client.post("/worker/results", json={
     "request_id": revision_request_id,
     "workflow_id": revision_wf_id,
@@ -722,19 +857,28 @@ with plugin_api.get_db() as conn:
     revision_file_payload_json = json.loads(revision_file_request["payload_json"]) if revision_file_request else {}
     check("Revision file worker payload includes attachment", any(f.get("filename") == "revision-notes.md" for f in revision_file_payload_json.get("revision", {}).get("attachments", [])), revision_file_payload_json)
 revision_file_request_id = revision_file_request["id"] if revision_file_request else "missing-revision-file-request"
-r = client.post("/worker/results", json={
+mark_worker_request_running(revision_file_request_id)
+worker_failure_payload = {
     "request_id": revision_file_request_id,
     "workflow_id": revision_wf_id,
     "status": "failed",
-    "error": "worker timeout",
-})
+    "error": "NotebookLM auth expired cookie token /tmp/secret-storage.json",
+}
+r = client.post("/worker/results", json=worker_failure_payload)
 check("Worker failure receipt status", r.status_code == 200, f"got {r.status_code}: {r.text}")
 worker_failure = r.json()
 check("Worker failure sends understandable Slack message", worker_failure.get("ok") is True and worker_failure.get("message_sent") is True and "오류" in worker_failure.get("message", ""), str(worker_failure))
+check("Worker failure hides internal diagnostics from Slack message", all(term not in worker_failure.get("message", "") for term in ("NotebookLM", "cookie", "token", "/tmp/secret")), str(worker_failure))
+with plugin_api.get_db() as conn:
+    failed_activity_count = conn.execute("SELECT count(*) FROM activity_logs WHERE workflow_id=? AND action='slack.worker_result_failed'", (revision_wf_id,)).fetchone()[0]
+r = client.post("/worker/results", json=worker_failure_payload)
+check("Worker failure replay rejected", r.status_code == 409, f"got {r.status_code}: {r.text}")
 with plugin_api.get_db() as conn:
     failed_request = conn.execute("SELECT * FROM planning_worker_requests WHERE id=?", (revision_file_request_id,)).fetchone()
     failure_activity = conn.execute("SELECT * FROM activity_logs WHERE workflow_id=? AND action=?", (revision_wf_id, "slack.worker_result_failed")).fetchone()
+    failed_activity_count_after = conn.execute("SELECT count(*) FROM activity_logs WHERE workflow_id=? AND action='slack.worker_result_failed'", (revision_wf_id,)).fetchone()[0]
     check("Worker failure request marked failed", failed_request is not None and failed_request["status"] == "failed", dict(failed_request) if failed_request else "")
+    check("Worker failure replay creates no duplicate message", failed_activity_count_after == failed_activity_count, {"before": failed_activity_count, "after": failed_activity_count_after})
     check("Worker failure activity logged", failure_activity is not None, dict(failure_activity) if failure_activity else "")
 
 r = anon.post("/slack/events", content=body, headers=headers)
