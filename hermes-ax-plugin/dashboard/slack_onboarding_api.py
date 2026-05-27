@@ -1324,7 +1324,23 @@ def _handle_material_text_event(
     return response
 
 
+def _message_event_ignore_reason(event: dict[str, Any]) -> str:
+    """Return an ignore reason for Slack message events AX should not treat as user replies."""
+    subtype = str(event.get("subtype") or "").strip()
+    user_id = str(event.get("user") or "").strip()
+    bot_user_id = _slack_bot_user_id()
+    if event.get("bot_id") or subtype == "bot_message" or (bot_user_id and user_id == bot_user_id):
+        return "bot_message"
+    if subtype and subtype != "file_share":
+        return "unsupported_message_subtype"
+    return ""
+
+
 def _handle_message_files_event(conn: sqlite3.Connection, *, payload: dict[str, Any], event: dict[str, Any], event_id: str, team_id: str, channel_id: str) -> dict[str, Any]:
+    ignore_reason = _message_event_ignore_reason(event)
+    if ignore_reason:
+        return {"ok": True, "ignored": True, "reason": ignore_reason, "event_type": "message", "channel_id": channel_id}
+
     files = event.get("files") or []
     if not isinstance(files, list):
         files = []
