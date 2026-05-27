@@ -181,6 +181,8 @@ def _extract_event_channel(event: dict[str, Any]) -> tuple[str, str]:
 
 
 def _fetch_slack_channel_name(channel_id: str) -> str:
+    if _env_bool("HERMES_AX_SLACK_DRY_RUN"):
+        return ""
     token = _slack_bot_token()
     if not token:
         return ""
@@ -199,6 +201,48 @@ def _fetch_slack_channel_name(channel_id: str) -> str:
         return ""
     channel = payload.get("channel") or {}
     return str(channel.get("name") or "").strip().lstrip("#")
+
+
+def _call_slack_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    token = _slack_bot_token()
+    if not token:
+        return {"ok": False, "reason": "missing_bot_token"}
+
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://slack.com/api/{method}",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        method="POST",
+    )
+    timeout = float(os.getenv("HERMES_AX_SLACK_API_TIMEOUT_SECONDS", "2"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8") or "{}")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return {"ok": False, "reason": "slack_api_error", "error": str(exc)}
+
+    if not data.get("ok"):
+        return {"ok": False, "reason": "slack_api_rejected", "error": str(data.get("error") or "unknown_error"), "data": data}
+    return {"ok": True, "data": data}
+
+
+def _join_slack_channel(channel_id: str) -> dict[str, Any]:
+    if _env_bool("HERMES_AX_SLACK_DRY_RUN"):
+        return {"joined": True, "dry_run": True}
+    result = _call_slack_api("conversations.join", {"channel": channel_id})
+    if result.get("ok"):
+        return {"joined": True, "channel": (result.get("data") or {}).get("channel") or {}}
+    if result.get("error") == "already_in_channel":
+        return {"joined": True, "already_in_channel": True}
+    return {
+        "joined": False,
+        "reason": result.get("reason") or "slack_join_failed",
+        "error": result.get("error") or result.get("reason") or "slack_join_failed",
+    }
 
 
 def _onboarding_message(company_name: str) -> str:
@@ -443,31 +487,12 @@ def _ensure_mapping(
 
 def _post_slack_message(channel_id: str, message: str) -> dict[str, Any]:
     if _env_bool("HERMES_AX_SLACK_DRY_RUN"):
-        return {"sent": True, "ts": f"dry-run-{int(time.time())}", "dry_run": True}
+        return {"sent": True, "ts": f"dry-run-{channel_id}", "dry_run": True}
 
-    token = _slack_bot_token()
-    if not token:
-        return {"sent": False, "reason": "missing_bot_token"}
-
-    payload = json.dumps({"channel": channel_id, "text": message}, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        "https://slack.com/api/chat.postMessage",
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json; charset=utf-8",
-        },
-        method="POST",
-    )
-    timeout = float(os.getenv("HERMES_AX_SLACK_API_TIMEOUT_SECONDS", "2"))
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8") or "{}")
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        return {"sent": False, "reason": "slack_api_error", "error": str(exc)}
-
-    if not data.get("ok"):
-        return {"sent": False, "reason": "slack_api_rejected", "error": str(data.get("error") or "unknown_error")}
+    result = _call_slack_api("chat.postMessage", {"channel": channel_id, "text": message})
+    if not result.get("ok"):
+        return {"sent": False, "reason": result.get("reason") or "slack_api_error", "error": result.get("error") or "unknown_error"}
+    data = result.get("data") or {}
     return {"sent": True, "ts": str(data.get("ts") or "")}
 
 
@@ -480,6 +505,29 @@ def _maybe_send_onboarding_message(conn: sqlite3.Connection, mapping: sqlite3.Ro
         return {"message_sent": False, "message_skipped_reason": "already_sent"}
 
     message = mapping["onboarding_message"] or _onboarding_message(mapping["company_name"])
+    join_result = _join_slack_channel(mapping["channel_id"])
+    now = _now()
+    if not join_result.get("joined"):
+        error = join_result.get("error") or join_result.get("reason") or "slack_join_failed"
+        conn.execute(
+            "UPDATE slack_channel_project_mappings SET last_error=?, updated_at=? WHERE id=?",
+            (error, now, mapping["id"]),
+        )
+        _record_slack_activity(
+            conn,
+            action="slack.onboarding_message_failed",
+            workflow_id=mapping["workflow_id"],
+            target_id=mapping["id"],
+            metadata={
+                "team_id": mapping["team_id"],
+                "channel_id": mapping["channel_id"],
+                "company_name": mapping["company_name"],
+                "reason": join_result.get("reason") or "slack_join_failed",
+                "join_error": error,
+            },
+        )
+        return {"message_sent": False, "message_skipped_reason": join_result.get("reason") or "slack_join_failed"}
+
     send_result = _post_onboarding_message(mapping["channel_id"], message)
     now = _now()
     if send_result.get("sent"):
@@ -558,6 +606,8 @@ def _slack_file_content_bytes(file_info: dict[str, Any]) -> bytes | None:
 
 def _download_slack_file_bytes(url: str) -> bytes | None:
     """Future-compatible Slack file downloader; disabled unless explicitly opted in."""
+    if _env_bool("HERMES_AX_SLACK_DRY_RUN"):
+        return None
     if not _env_bool("HERMES_AX_SLACK_DOWNLOAD_FILES"):
         return None
     token = _slack_bot_token()
@@ -609,20 +659,23 @@ def _create_slack_source_artifact(
     art_id = _uuid("art_")
     content_bytes = _slack_file_content_bytes(file_info)
     manifest = _slack_file_manifest(file_info)
-    if content_bytes is None:
+    manifest_fallback = content_bytes is None
+    stored_mimetype = mimetype or "application/octet-stream"
+    stored_filename = filename
+    if manifest_fallback:
         content_bytes = manifest.encode("utf-8")
-        if not mimetype:
-            mimetype = "text/plain"
+        stored_mimetype = "text/plain"
+        stored_filename = f"{filename or title or 'slack-file'}.manifest.txt"
     stored = get_artifact_storage().write_bytes(
         workflow_id=workflow_id,
         stage_id=stage_id,
         artifact_id=art_id,
         content=content_bytes,
-        mime_type=mimetype or "application/octet-stream",
-        original_filename=filename,
+        mime_type=stored_mimetype,
+        original_filename=stored_filename,
     )
     content_text = ""
-    if (mimetype or "").startswith("text/") or (mimetype or "") in {"application/json", "text/markdown"}:
+    if (stored_mimetype or "").startswith("text/") or (stored_mimetype or "") in {"application/json", "text/markdown"}:
         try:
             content_text = content_bytes.decode("utf-8")
         except UnicodeDecodeError:
@@ -650,7 +703,7 @@ def _create_slack_source_artifact(
             "source_material",
             title or filename or "Slack 첨부 파일",
             content_text,
-            mimetype or stored.mime_type,
+            stored.mime_type,
             "final",
             stored.file_path,
             stored.file_size,

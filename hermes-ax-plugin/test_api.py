@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+import urllib.error
 
 # Ensure we use the dashboard package directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "dashboard"))
@@ -54,6 +55,31 @@ def check(label, condition, detail=""):
     else:
         failed += 1
         print(f"  FAIL  {label} — {detail}")
+
+
+class FakeHTTPResponse:
+    def __init__(self, *, payload: dict | None = None, body: bytes | None = None):
+        self._body = body if body is not None else json.dumps(payload or {}).encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def request_url(req) -> str:
+    return getattr(req, "full_url", str(req))
+
+
+def request_json(req) -> dict:
+    raw = getattr(req, "data", None) or b"{}"
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    return json.loads(raw.decode("utf-8") or "{}")
 
 
 def fetch_worker_request(conn, workflow_id: str, request_type: str, latest: bool = True):
@@ -233,6 +259,55 @@ def slack_message_single_file_payload(
     }
 
 
+def slack_message_pdf_file_payload(
+    event_id: str,
+    *,
+    channel_id: str,
+    file_id: str,
+    filename: str = "source.pdf",
+    title: str = "PDF source",
+    url_private: str = "https://slack.example/files/source.pdf",
+    url_private_download: str = "https://slack.example/files/source.pdf/download",
+) -> dict:
+    file_info = {
+        "id": file_id,
+        "name": filename,
+        "title": title,
+        "mimetype": "application/pdf",
+        "size": 1234,
+        "user": "UCLIENTPDF",
+        "created": 1710000100,
+    }
+    if url_private:
+        file_info["url_private"] = url_private
+    if url_private_download:
+        file_info["url_private_download"] = url_private_download
+    return {
+        "type": "event_callback",
+        "team_id": "TLOCAL",
+        "api_app_id": "AAXLOCAL",
+        "event_id": event_id,
+        "event_time": int(time.time()),
+        "event": {
+            "type": "message",
+            "channel": channel_id,
+            "user": "UCLIENTPDF",
+            "ts": "1710000100.000100",
+            "text": "PDF 자료 첨부드립니다.",
+            "files": [file_info],
+        },
+    }
+
+
+def fetch_source_artifact(slack_file_id: str):
+    with plugin_api.get_db() as conn:
+        source = conn.execute("SELECT * FROM slack_workflow_source_files WHERE slack_file_id=?", (slack_file_id,)).fetchone()
+        artifact = None
+        if source and source["artifact_id"]:
+            artifact = conn.execute("SELECT * FROM artifacts WHERE id=?", (source["artifact_id"],)).fetchone()
+        return source, artifact
+
+
 def check_parent_session():
     r = client.get("/auth/session")
     check("GET /auth/session status", r.status_code == 200, f"got {r.status_code}: {r.text}")
@@ -322,6 +397,125 @@ with plugin_api.get_db() as conn:
     check("Slack member_joined without bot id creates no workflow", member_count == 0, f"got {member_count}")
 os.environ["HERMES_AX_SLACK_BOT_USER_ID"] = saved_bot_user_id
 
+saved_dry_run = os.environ.get("HERMES_AX_SLACK_DRY_RUN")
+saved_ax_bot_token = os.environ.get("HERMES_AX_SLACK_BOT_TOKEN")
+saved_slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
+orig_urlopen = slack_onboarding_api.urllib.request.urlopen
+try:
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = "true"
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = "test-bot-token"
+    os.environ.pop("SLACK_BOT_TOKEN", None)
+    dry_run_info_calls = []
+
+    def fake_dry_run_info_lookup(req, timeout=None):
+        dry_run_info_calls.append(request_url(req))
+        return FakeHTTPResponse(payload={"ok": True, "channel": {"name": "네트워크조회"}})
+
+    slack_onboarding_api.urllib.request.urlopen = fake_dry_run_info_lookup
+    dry_run_info_payload = slack_event_payload(event_id="EvDRYRUNINFO", channel_id="CDRYRUNINFO", channel_name="")
+    dry_run_info_payload["event"]["type"] = "channel_created"
+    dry_run_info_payload["event"]["channel"] = {"id": "CDRYRUNINFO"}
+    dry_run_info_body, dry_run_info_headers = slack_headers(dry_run_info_payload)
+    r = anon.post("/slack/events", content=dry_run_info_body, headers=dry_run_info_headers)
+    dry_run_info_result = r.json()
+    check(
+        "Slack dry-run channel lookup skips network",
+        r.status_code == 200 and dry_run_info_result.get("reason") == "channel_name_required" and dry_run_info_calls == [],
+        {"response": f"{r.status_code}: {r.text}", "network_calls": dry_run_info_calls},
+    )
+finally:
+    slack_onboarding_api.urllib.request.urlopen = orig_urlopen
+    if saved_dry_run is None:
+        os.environ.pop("HERMES_AX_SLACK_DRY_RUN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_DRY_RUN"] = saved_dry_run
+    if saved_ax_bot_token is None:
+        os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_ax_bot_token
+    if saved_slack_bot_token is None:
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["SLACK_BOT_TOKEN"] = saved_slack_bot_token
+
+saved_dry_run = os.environ.get("HERMES_AX_SLACK_DRY_RUN")
+saved_ax_bot_token = os.environ.get("HERMES_AX_SLACK_BOT_TOKEN")
+saved_slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
+orig_urlopen = slack_onboarding_api.urllib.request.urlopen
+try:
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = "false"
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = "test-bot-token"
+    os.environ.pop("SLACK_BOT_TOKEN", None)
+    slack_api_calls = []
+
+    def fake_join_then_post(req, timeout=None):
+        url = request_url(req)
+        payload = request_json(req)
+        auth = req.headers.get("Authorization") or req.headers.get("authorization")
+        if url.endswith("/conversations.join"):
+            slack_api_calls.append({"method": "conversations.join", "payload": payload, "auth": auth})
+            return FakeHTTPResponse(payload={"ok": True, "channel": {"id": payload.get("channel")}})
+        if url.endswith("/chat.postMessage"):
+            slack_api_calls.append({"method": "chat.postMessage", "payload": payload, "auth": auth})
+            return FakeHTTPResponse(payload={"ok": True, "ts": "1710000200.000100"})
+        raise AssertionError(f"unexpected Slack API call: {url}")
+
+    slack_onboarding_api.urllib.request.urlopen = fake_join_then_post
+    join_payload = slack_event_payload(event_id="EvJOINAPI1", channel_id="CJOINAPI1", channel_name="조인테스트")
+    join_payload["event"]["type"] = "channel_created"
+    join_body, join_headers = slack_headers(join_payload)
+    r = anon.post("/slack/events", content=join_body, headers=join_headers)
+    join_result = r.json()
+    check("Slack non-dry-run channel_created status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+    check("Slack non-dry-run joins before onboarding post", [c["method"] for c in slack_api_calls] == ["conversations.join", "chat.postMessage"], slack_api_calls)
+    check("Slack join targets onboarding channel", slack_api_calls and slack_api_calls[0]["payload"].get("channel") == "CJOINAPI1", slack_api_calls)
+    check("Slack onboarding post follows join", len(slack_api_calls) == 2 and slack_api_calls[1]["payload"].get("channel") == "CJOINAPI1" and join_result.get("message_sent") is True, join_result)
+    check("Slack API calls use bot token", all(c.get("auth") == "Bearer test-bot-token" for c in slack_api_calls), slack_api_calls)
+
+    slack_api_calls.clear()
+    join_again_payload = slack_event_payload(event_id="EvJOINAPI1B", channel_id="CJOINAPI1", channel_name="조인테스트")
+    join_again_payload["event"]["type"] = "channel_created"
+    join_again_body, join_again_headers = slack_headers(join_again_payload)
+    r = anon.post("/slack/events", content=join_again_body, headers=join_again_headers)
+    join_again_result = r.json()
+    check("Slack already-sent mapping does not resend onboarding", r.status_code == 200 and join_again_result.get("message_sent") is False and join_again_result.get("message_skipped_reason") == "already_sent", f"got {r.status_code}: {r.text}")
+    check("Slack already-sent mapping skips join and post", slack_api_calls == [], slack_api_calls)
+
+    def fake_already_in_channel_then_post(req, timeout=None):
+        url = request_url(req)
+        payload = request_json(req)
+        if url.endswith("/conversations.join"):
+            slack_api_calls.append({"method": "conversations.join", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": False, "error": "already_in_channel"})
+        if url.endswith("/chat.postMessage"):
+            slack_api_calls.append({"method": "chat.postMessage", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": "1710000201.000100"})
+        raise AssertionError(f"unexpected Slack API call: {url}")
+
+    slack_api_calls.clear()
+    slack_onboarding_api.urllib.request.urlopen = fake_already_in_channel_then_post
+    already_joined_payload = slack_event_payload(event_id="EvJOINAPI2", channel_id="CJOINAPI2", channel_name="이미참여")
+    already_joined_payload["event"]["type"] = "channel_created"
+    already_joined_body, already_joined_headers = slack_headers(already_joined_payload)
+    r = anon.post("/slack/events", content=already_joined_body, headers=already_joined_headers)
+    already_joined_result = r.json()
+    check("Slack already_in_channel join treated as success", r.status_code == 200 and already_joined_result.get("ok") is True and already_joined_result.get("message_sent") is True, f"got {r.status_code}: {r.text}")
+    check("Slack already_in_channel still posts onboarding", [c["method"] for c in slack_api_calls] == ["conversations.join", "chat.postMessage"], slack_api_calls)
+finally:
+    slack_onboarding_api.urllib.request.urlopen = orig_urlopen
+    if saved_dry_run is None:
+        os.environ.pop("HERMES_AX_SLACK_DRY_RUN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_DRY_RUN"] = saved_dry_run
+    if saved_ax_bot_token is None:
+        os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_ax_bot_token
+    if saved_slack_bot_token is None:
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["SLACK_BOT_TOKEN"] = saved_slack_bot_token
+
 payload = slack_event_payload()
 body, headers = slack_headers(payload)
 r = anon.post("/slack/events", content=body, headers=headers)
@@ -332,6 +526,7 @@ check("Slack onboarding ok", slack_result.get("ok") is True, str(slack_result))
 check("Slack company name extracted", slack_result.get("company_name") == "테스트전자", str(slack_result))
 check("Slack onboarding message generated", slack_result.get("onboarding_message") == expected_message, str(slack_result))
 check("Slack dry-run message treated as sent", slack_result.get("message_sent") is True, str(slack_result))
+check("Slack dry-run message timestamp deterministic", slack_result.get("onboarding_message_ts") == "dry-run-CLOCALTEST", str(slack_result))
 slack_wf_id = slack_result.get("workflow_id")
 check("Slack workflow id returned", isinstance(slack_wf_id, str) and slack_wf_id.startswith("wi_"), str(slack_result))
 
@@ -585,6 +780,204 @@ if saved_ax_bot_token is not None:
     os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_ax_bot_token
 if saved_slack_bot_token is not None:
     os.environ["SLACK_BOT_TOKEN"] = saved_slack_bot_token
+
+print("\n=== Slack PDF File Downloads ===")
+pdf_onboard_payload = slack_event_payload(event_id="EvPDFONBOARD1", channel_id="CPDFTEST", channel_name="PDF테스트")
+pdf_onboard_body, pdf_onboard_headers = slack_headers(pdf_onboard_payload)
+r = anon.post("/slack/events", content=pdf_onboard_body, headers=pdf_onboard_headers)
+check("PDF workflow onboarding status", r.status_code == 200 and r.json().get("workflow_id"), f"got {r.status_code}: {r.text}")
+pdf_wf_id = r.json().get("workflow_id")
+
+saved_download_files = os.environ.get("HERMES_AX_SLACK_DOWNLOAD_FILES")
+saved_ax_bot_token = os.environ.get("HERMES_AX_SLACK_BOT_TOKEN")
+saved_slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
+orig_urlopen = slack_onboarding_api.urllib.request.urlopen
+try:
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = "false"
+    os.environ["HERMES_AX_SLACK_DOWNLOAD_FILES"] = "true"
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = "test-bot-token"
+    os.environ.pop("SLACK_BOT_TOKEN", None)
+    download_calls = []
+    post_calls = []
+
+    def fake_pdf_download(req, timeout=None):
+        url = request_url(req)
+        auth = req.headers.get("Authorization") or req.headers.get("authorization")
+        if url == "https://slack.example/files/FDOWNLOADPDF/download":
+            download_calls.append({"url": url, "auth": auth})
+            return FakeHTTPResponse(body=b"%PDF-1.7\nreal downloaded pdf bytes")
+        if url.endswith("/chat.postMessage"):
+            post_calls.append({"url": url, "auth": auth, "payload": request_json(req)})
+            return FakeHTTPResponse(payload={"ok": True, "ts": "1710000300.000100"})
+        raise AssertionError(f"unexpected Slack API call: {url}")
+
+    slack_onboarding_api.urllib.request.urlopen = fake_pdf_download
+    download_payload = slack_message_pdf_file_payload(
+        "EvPDFDOWNLOAD1",
+        channel_id="CPDFTEST",
+        file_id="FDOWNLOADPDF",
+        filename="downloaded.pdf",
+        title="다운로드 PDF",
+        url_private="https://slack.example/files/FDOWNLOADPDF",
+        url_private_download="https://slack.example/files/FDOWNLOADPDF/download",
+    )
+    download_body, download_headers = slack_headers(download_payload)
+    r = anon.post("/slack/events", content=download_body, headers=download_headers)
+    check("Slack PDF download event status", r.status_code == 200 and r.json().get("stored_count") == 1, f"got {r.status_code}: {r.text}")
+    source, artifact = fetch_source_artifact("FDOWNLOADPDF")
+    file_response = client.get(f"/artifacts/{artifact['id']}/file") if artifact else None
+    metadata = json.loads(source["metadata_json"]) if source else {}
+    expected_download_auth = "Bearer " + os.environ["HERMES_AX_SLACK_BOT_TOKEN"]
+    check("Slack PDF download uses url_private_download with bot token", download_calls == [{"url": "https://slack.example/files/FDOWNLOADPDF/download", "auth": expected_download_auth}], download_calls)
+    check("Slack downloaded PDF bytes stored", file_response is not None and file_response.status_code == 200 and file_response.content.startswith(b"%PDF-"), file_response.content[:40] if file_response is not None else "missing")
+    check("Slack downloaded PDF artifact remains linked", source is not None and artifact is not None and source["artifact_id"] == artifact["id"] and source["workflow_id"] == pdf_wf_id, (dict(source) if source else None, dict(artifact) if artifact else None))
+    check("Slack downloaded PDF metadata preserved", metadata.get("file", {}).get("url_private_download", "").endswith("/download") and metadata.get("file", {}).get("id") == "FDOWNLOADPDF", metadata)
+
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = "true"
+    os.environ["HERMES_AX_SLACK_DOWNLOAD_FILES"] = "true"
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = "test-bot-token"
+    dry_run_download_calls = []
+
+    def fake_dry_run_download(req, timeout=None):
+        dry_run_download_calls.append(request_url(req))
+        return FakeHTTPResponse(body=b"%PDF-1.7\ndry-run should not download")
+
+    slack_onboarding_api.urllib.request.urlopen = fake_dry_run_download
+    dry_run_payload = slack_message_pdf_file_payload(
+        "EvPDFDRYRUNSKIP",
+        channel_id="CPDFTEST",
+        file_id="FDRYRUNPDF",
+        filename="dry-run.pdf",
+        title="Dry-run PDF",
+        url_private="https://slack.example/files/FDRYRUNPDF",
+        url_private_download="https://slack.example/files/FDRYRUNPDF/download",
+    )
+    dry_run_body, dry_run_headers = slack_headers(dry_run_payload)
+    r = anon.post("/slack/events", content=dry_run_body, headers=dry_run_headers)
+    dry_source, dry_artifact = fetch_source_artifact("FDRYRUNPDF")
+    dry_file_response = client.get(f"/artifacts/{dry_artifact['id']}/file") if dry_artifact else None
+    check(
+        "Slack PDF dry-run skips download network",
+        r.status_code == 200
+        and r.json().get("stored_count") == 1
+        and dry_run_download_calls == []
+        and dry_artifact is not None
+        and dry_artifact["mime_type"] != "application/pdf"
+        and dry_file_response is not None
+        and dry_file_response.content.startswith(b"Slack file metadata manifest"),
+        {
+            "response": f"{r.status_code}: {r.text}",
+            "network_calls": dry_run_download_calls,
+            "source": dict(dry_source) if dry_source else None,
+            "artifact": dict(dry_artifact) if dry_artifact else None,
+            "file_prefix": dry_file_response.content[:40] if dry_file_response is not None else None,
+        },
+    )
+
+    def check_pdf_manifest_fallback(label: str, *, event_id: str, file_id: str, env_download: str | None, token: str | None, url_private: str, url_private_download: str, fake_failure: bool = False):
+        if env_download is None:
+            os.environ.pop("HERMES_AX_SLACK_DOWNLOAD_FILES", None)
+        else:
+            os.environ["HERMES_AX_SLACK_DOWNLOAD_FILES"] = env_download
+        if token is None:
+            os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+            os.environ.pop("SLACK_BOT_TOKEN", None)
+        else:
+            os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = token
+            os.environ.pop("SLACK_BOT_TOKEN", None)
+        if fake_failure:
+            def failing_download(req, timeout=None):
+                raise urllib.error.URLError("download failed")
+            slack_onboarding_api.urllib.request.urlopen = failing_download
+        else:
+            slack_onboarding_api.urllib.request.urlopen = orig_urlopen
+        payload = slack_message_pdf_file_payload(
+            event_id,
+            channel_id="CPDFTEST",
+            file_id=file_id,
+            filename=f"{file_id.lower()}.pdf",
+            title=f"{label} PDF",
+            url_private=url_private,
+            url_private_download=url_private_download,
+        )
+        body, headers = slack_headers(payload)
+        resp = anon.post("/slack/events", content=body, headers=headers)
+        source_row, artifact_row = fetch_source_artifact(file_id)
+        file_resp = client.get(f"/artifacts/{artifact_row['id']}/file") if artifact_row else None
+        source_metadata = json.loads(source_row["metadata_json"]) if source_row else {}
+        fallback_ok = (
+            resp.status_code == 200
+            and resp.json().get("stored_count") == 1
+            and source_row is not None
+            and artifact_row is not None
+            and source_row["artifact_id"] == artifact_row["id"]
+            and artifact_row["mime_type"] != "application/pdf"
+            and artifact_row["content_type"] != "application/pdf"
+            and file_resp is not None
+            and file_resp.status_code == 200
+            and file_resp.content.startswith(b"Slack file metadata manifest")
+            and not file_resp.content.startswith(b"%PDF-")
+            and source_metadata.get("file", {}).get("id") == file_id
+        )
+        check(f"Slack PDF manifest fallback for {label}", fallback_ok, {
+            "response": f"{resp.status_code}: {resp.text}",
+            "source": dict(source_row) if source_row else None,
+            "artifact": dict(artifact_row) if artifact_row else None,
+            "file_prefix": file_resp.content[:40] if file_resp is not None else None,
+            "metadata": source_metadata,
+        })
+
+    check_pdf_manifest_fallback(
+        "download disabled",
+        event_id="EvPDFFALLBACKDISABLED",
+        file_id="FPDFDISABLED",
+        env_download="false",
+        token="test-bot-token",
+        url_private="https://slack.example/files/FPDFDISABLED",
+        url_private_download="https://slack.example/files/FPDFDISABLED/download",
+    )
+    check_pdf_manifest_fallback(
+        "missing token",
+        event_id="EvPDFFALLBACKTOKEN",
+        file_id="FPDFTOKEN",
+        env_download="true",
+        token=None,
+        url_private="https://slack.example/files/FPDFTOKEN",
+        url_private_download="https://slack.example/files/FPDFTOKEN/download",
+    )
+    check_pdf_manifest_fallback(
+        "missing URL",
+        event_id="EvPDFFALLBACKURL",
+        file_id="FPDFNOURL",
+        env_download="true",
+        token="test-bot-token",
+        url_private="",
+        url_private_download="",
+    )
+    check_pdf_manifest_fallback(
+        "download failure",
+        event_id="EvPDFFALLBACKFAIL",
+        file_id="FPDFFAIL",
+        env_download="true",
+        token="test-bot-token",
+        url_private="https://slack.example/files/FPDFFAIL",
+        url_private_download="https://slack.example/files/FPDFFAIL/download",
+        fake_failure=True,
+    )
+finally:
+    slack_onboarding_api.urllib.request.urlopen = orig_urlopen
+    if saved_download_files is None:
+        os.environ.pop("HERMES_AX_SLACK_DOWNLOAD_FILES", None)
+    else:
+        os.environ["HERMES_AX_SLACK_DOWNLOAD_FILES"] = saved_download_files
+    if saved_ax_bot_token is None:
+        os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_ax_bot_token
+    if saved_slack_bot_token is None:
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["SLACK_BOT_TOKEN"] = saved_slack_bot_token
 
 design = client.get("/agents/design")
 check("GET /agents/design status", design.status_code == 200)
