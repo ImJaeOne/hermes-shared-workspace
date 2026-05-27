@@ -22,6 +22,7 @@ RUN git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/he
     && python -m venv /opt/hermes-agent/venv \
     && /opt/hermes-agent/venv/bin/pip install --upgrade pip setuptools wheel \
     && /opt/hermes-agent/venv/bin/pip install -e "/opt/hermes-agent[web,mcp,cli,pty,slack,messaging]" \
+    && /opt/hermes-agent/venv/bin/pip install "notebooklm-py==0.5.0" \
     && cd /opt/hermes-agent/web \
     && npm ci \
     && npm run build

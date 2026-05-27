@@ -243,6 +243,29 @@ Slack App의 Request URL은 trailing slash 없이 아래처럼 설정합니다.
 https://<railway-domain>/api/plugins/hermes-ax/slack/events
 ```
 
+### 9. 자료조사 worker 실행 엔진
+
+Issue #24 기준 자료조사 worker는 Enterprise API를 전제로 하지 않고, adapter 방식으로 실행됩니다. Slack 사용자는 자료를 올리고 결과를 받는 흐름만 사용하며, NotebookLM/MCP/쿠키 같은 설정 용어는 사용자-facing 메시지에 노출하지 않습니다.
+
+| 환경변수 | 기본값 | 용도 |
+|----------|--------|------|
+| `HERMES_AX_RESEARCH_ENGINE` | `mock` | `mock`, `notebooklm_py`, `gemini_rag` 중 선택 |
+| `HERMES_AX_RESEARCH_FALLBACK_ENGINE` | `mock` | 기본 엔진 실패/미설정 시 대체 엔진 |
+| `HERMES_AX_RESEARCH_SKILL_ID` | `skill_001` | AX DB `skills` 테이블에서 로드할 자료조사 프롬프트 |
+| `HERMES_AX_NOTEBOOKLM_AUTH_JSON` | 없음 | `notebooklm-py` storage state JSON secret 또는 파일 경로 |
+| `HERMES_AX_NOTEBOOKLM_AUTH_PATH` | 없음 | `notebooklm-py` storage state 파일 경로 |
+| `HERMES_AX_NOTEBOOKLM_PROFILE` | 없음 | `notebooklm-py` profile 이름 |
+| `HERMES_AX_NOTEBOOKLM_KEEP_NOTEBOOKS` | `false` | 실행 후 NotebookLM 임시 노트북 보존 여부 |
+
+자료 확인 답변이 들어오면 `planning_worker_requests`에 queued request가 쌓입니다. 운영/테스트에서는 아래 endpoint로 실행할 수 있습니다.
+
+```text
+POST /api/plugins/hermes-ax/worker/requests/<request_id>/run
+POST /api/plugins/hermes-ax/worker/run-queued?limit=1
+```
+
+local/CI 검증은 외부 인증 없이 mock adapter로 통과해야 합니다. `HERMES_AX_RESEARCH_ENGINE=notebooklm_py`인데 인증 정보나 패키지가 없으면 사용자에게는 비기술적 연결 문제로 안내하고, fallback이 설정되어 있으면 mock 또는 후속 `gemini_rag` 경로로 계속 진행합니다.
+
 ## Development
 
 ### 프론트엔드 빌드
