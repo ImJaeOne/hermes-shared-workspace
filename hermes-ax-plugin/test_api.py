@@ -663,9 +663,10 @@ with plugin_api.get_db() as conn:
     check("Slack onboarding activity exists", activity is not None)
 
 message_payload = slack_message_files_payload("EvFILES1")
+message_payload["event"]["subtype"] = "file_share"
 message_body, message_headers = slack_headers(message_payload)
 r = anon.post("/slack/events", content=message_body, headers=message_headers)
-check("Slack message files event status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+check("Slack message file_share event status", r.status_code == 200, f"got {r.status_code}: {r.text}")
 files_result = r.json()
 check("Slack message files response ok", files_result.get("ok") is True, str(files_result))
 check("Slack message files stores supported files", files_result.get("stored_count") == 2, str(files_result))
@@ -693,6 +694,23 @@ with plugin_api.get_db() as conn:
     check("Slack workflow moved to material waiting", wf_after_files["current_stage_id"] == "p_material_waiting", dict(wf_after_files))
     material_state = conn.execute("SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (slack_wf_id,)).fetchone()
     check("Slack material collection state stored", material_state is not None and material_state["status"] == "pending_confirmation" and material_state["source_file_count"] == 2 and material_state["rejected_file_count"] == 2, dict(material_state) if material_state else "")
+
+bot_echo_payload = slack_message_text_payload("EvBOTCONFIRM1", confirmation_message)
+bot_echo_payload["event"]["subtype"] = "bot_message"
+bot_echo_payload["event"]["bot_id"] = "BAXLOCALBOT"
+bot_echo_payload["event"]["user"] = "UBOTLEAD"
+bot_echo_body, bot_echo_headers = slack_headers(bot_echo_payload)
+r = anon.post("/slack/events", content=bot_echo_body, headers=bot_echo_headers)
+check("Slack ignores own material confirmation bot message", r.status_code == 200 and r.json().get("ignored") is True and r.json().get("reason") == "bot_message", f"got {r.status_code}: {r.text}")
+with plugin_api.get_db() as conn:
+    wf_after_bot_echo = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (slack_wf_id,)).fetchone()
+    material_state_after_bot_echo = conn.execute("SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (slack_wf_id,)).fetchone()
+    premature_research_count = conn.execute("SELECT count(*) FROM planning_worker_requests WHERE workflow_id=? AND request_type='research'", (slack_wf_id,)).fetchone()[0]
+    premature_transition_count = conn.execute("SELECT count(*) FROM stage_transitions WHERE workflow_id=? AND to_stage_id='p_research_running'", (slack_wf_id,)).fetchone()[0]
+    check("Slack bot echo keeps workflow waiting", wf_after_bot_echo["current_stage_id"] == "p_material_waiting", dict(wf_after_bot_echo))
+    check("Slack bot echo keeps material state pending", material_state_after_bot_echo is not None and material_state_after_bot_echo["status"] == "pending_confirmation", dict(material_state_after_bot_echo) if material_state_after_bot_echo else "")
+    check("Slack bot echo does not create research request", premature_research_count == 0, f"got {premature_research_count}")
+    check("Slack bot echo does not transition to research", premature_transition_count == 0, f"got {premature_transition_count}")
 
 r = client.get(f"/workflows/{slack_wf_id}")
 check("Workflow detail includes Slack source files status", r.status_code == 200, f"got {r.status_code}: {r.text}")
