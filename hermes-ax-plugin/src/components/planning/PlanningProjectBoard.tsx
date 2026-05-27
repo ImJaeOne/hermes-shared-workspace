@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { downloadArtifactFile, getApiErrorMessage, getArtifact, getWorkflow } from "../../api/client";
+import { deleteWorkflow, downloadArtifactFile, getApiErrorMessage, getArtifact, getWorkflow } from "../../api/client";
 import { useApp } from "../../context/AppContext";
 import type { WorkflowDetailResponse } from "../../types/api";
 import type { Artifact, StageDefinition, WorkflowInstance } from "../../types/models";
@@ -16,12 +16,16 @@ interface ProjectSummary {
 const NEXT_STAGE_PREVIEW = ["시놉시스", "스토리보드", "원고"];
 
 export function PlanningProjectBoard() {
-  const { boardData, setSelectedWorkflowId, setViewMode } = useApp();
+  const { boardData, refreshBoard, setSelectedWorkflowId, setViewMode } = useApp();
   const [showCreateInstance, setShowCreateInstance] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [workflowDetail, setWorkflowDetail] = useState<WorkflowDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<WorkflowDetailResponse | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deletingProject, setDeletingProject] = useState(false);
   const detailRequestSeqRef = useRef(0);
 
   const projects = useMemo<ProjectSummary[]>(() => {
@@ -90,6 +94,41 @@ export function PlanningProjectBoard() {
   const handleOpenPipeline = (workflowId: string) => {
     setSelectedWorkflowId(workflowId);
     setViewMode("pipeline");
+  };
+
+  const handleRequestDeleteProject = (workflow: WorkflowDetailResponse) => {
+    setDeleteTarget(workflow);
+    setDeleteConfirmText("");
+    setDeleteError("");
+  };
+
+  const handleCloseDeleteDialog = () => {
+    if (deletingProject) return;
+    setDeleteTarget(null);
+    setDeleteConfirmText("");
+    setDeleteError("");
+  };
+
+  const handleConfirmDeleteProject = async () => {
+    if (!deleteTarget || deleteConfirmText.trim() !== deleteTarget.title) return;
+    setDeletingProject(true);
+    setDeleteError("");
+    try {
+      await deleteWorkflow(deleteTarget.id);
+      detailRequestSeqRef.current += 1;
+      setWorkflowDetail(null);
+      setDetailLoading(false);
+      setDetailError("");
+      setSelectedProjectId(null);
+      setSelectedWorkflowId(null);
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
+      await refreshBoard();
+    } catch (error) {
+      setDeleteError(getApiErrorMessage(error, "회사 프로젝트를 삭제하지 못했습니다."));
+    } finally {
+      setDeletingProject(false);
+    }
   };
 
   if (!boardData) {
@@ -168,7 +207,11 @@ export function PlanningProjectBoard() {
             <p>{detailError}</p>
           </div>
         ) : workflowDetail ? (
-          <ProjectDetail workflow={workflowDetail} onOpenPipeline={() => handleOpenPipeline(workflowDetail.id)} />
+          <ProjectDetail
+            workflow={workflowDetail}
+            onOpenPipeline={() => handleOpenPipeline(workflowDetail.id)}
+            onRequestDelete={() => handleRequestDeleteProject(workflowDetail)}
+          />
         ) : (
           <div className="ax-planning-detail-placeholder">
             <h3>{selectedProject.workflow.title}</h3>
@@ -178,11 +221,28 @@ export function PlanningProjectBoard() {
       </section>
 
       {showCreateInstance && <CreateInstanceDialog onClose={() => setShowCreateInstance(false)} />}
+      {deleteTarget && (
+        <DeleteProjectDialog
+          workflow={deleteTarget}
+          confirmText={deleteConfirmText}
+          error={deleteError}
+          deleting={deletingProject}
+          onConfirmTextChange={setDeleteConfirmText}
+          onCancel={handleCloseDeleteDialog}
+          onConfirm={handleConfirmDeleteProject}
+        />
+      )}
     </div>
   );
 }
 
-function ProjectDetail({ workflow, onOpenPipeline }: { workflow: WorkflowDetailResponse; onOpenPipeline: () => void }) {
+interface ProjectDetailProps {
+  workflow: WorkflowDetailResponse;
+  onOpenPipeline: () => void;
+  onRequestDelete: () => void;
+}
+
+function ProjectDetail({ workflow, onOpenPipeline, onRequestDelete }: ProjectDetailProps) {
   const currentStage = workflow.stages.find((stage) => stage.is_current);
   const latestArtifacts = useMemo(() => {
     const latestOnly = workflow.artifacts.filter((artifact) => artifact.is_latest !== 0);
@@ -271,9 +331,14 @@ function ProjectDetail({ workflow, onOpenPipeline }: { workflow: WorkflowDetailR
             <span>최근 업데이트 {formatDateTime(workflow.updated_at)}</span>
           </div>
         </div>
-        <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={onOpenPipeline}>
-          상세 진행 관리
-        </button>
+        <div className="ax-planning-detail-actions">
+          <button className="ax-btn ax-btn-danger ax-btn-sm" onClick={onRequestDelete}>
+            회사 프로젝트 삭제
+          </button>
+          <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={onOpenPipeline}>
+            상세 진행 관리
+          </button>
+        </div>
       </div>
 
       <div className="ax-planning-research-summary">
@@ -365,6 +430,65 @@ function ProjectDetail({ workflow, onOpenPipeline }: { workflow: WorkflowDetailR
           ))}
         </div>
       </section>
+    </div>
+  );
+}
+
+interface DeleteProjectDialogProps {
+  workflow: WorkflowDetailResponse;
+  confirmText: string;
+  error: string;
+  deleting: boolean;
+  onConfirmTextChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function DeleteProjectDialog({
+  workflow,
+  confirmText,
+  error,
+  deleting,
+  onConfirmTextChange,
+  onCancel,
+  onConfirm,
+}: DeleteProjectDialogProps) {
+  const canDelete = confirmText.trim() === workflow.title && !deleting;
+
+  return (
+    <div className="ax-overlay" onClick={onCancel}>
+      <div className="ax-dialog" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="delete-project-title">
+        <div className="ax-dialog-header">
+          <p className="ax-eyebrow">삭제 확인</p>
+          <h2 id="delete-project-title">회사 프로젝트 삭제</h2>
+        </div>
+        <div className="ax-dialog-body">
+          <p className="ax-planning-delete-warning">
+            <strong>{workflow.title}</strong> 프로젝트를 삭제합니다. AX Dashboard의 프로젝트, 산출물, Slack 매핑/자료 목록,
+            자료조사 worker 요청/결과가 함께 정리됩니다. Slack 채널 자체는 삭제되지 않습니다.
+          </p>
+          <label className="ax-form-group">
+            <span>삭제하려면 프로젝트명을 그대로 입력하세요.</span>
+            <input
+              className="ax-input"
+              value={confirmText}
+              onChange={(event) => onConfirmTextChange(event.target.value)}
+              placeholder={workflow.title}
+              disabled={deleting}
+              autoFocus
+            />
+          </label>
+          {error && <p className="ax-form-error">{error}</p>}
+        </div>
+        <div className="ax-dialog-footer">
+          <button className="ax-btn ax-btn-ghost" onClick={onCancel} disabled={deleting}>
+            취소
+          </button>
+          <button className="ax-btn ax-btn-danger" onClick={onConfirm} disabled={!canDelete}>
+            {deleting ? "삭제 중..." : "삭제"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

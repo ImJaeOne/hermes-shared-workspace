@@ -1183,6 +1183,71 @@ wf_id = wf["id"]
 check("workflow id returned", wf_id.startswith("wi_"), f"got {wf_id}")
 check("initial stage is p_material_requesting", wf["current_stage_id"] == "p_material_requesting")
 
+print("\n=== Delete Workflow Cascade ===")
+r = client.post("/workflows", json={
+    "template_id": "planning_research_mvp_v1",
+    "title": "[삭제테스트] 기획 자료조사",
+    "priority": 2,
+    "assignee": "기획팀 임팀장",
+})
+check("POST delete-target workflow status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+delete_wf_id = r.json()["id"]
+with plugin_api.get_db() as conn:
+    now = plugin_api._now()
+    mapping_id = "scpm_delete_cascade"
+    request_id = "pwr_delete_cascade"
+    conn.execute(
+        """INSERT INTO slack_channel_project_mappings
+           (id, team_id, channel_id, channel_name, normalized_channel_name, company_name, project_key,
+            workflow_id, status, onboarding_message, first_event_id, last_event_id, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (mapping_id, "TDEL", "CDEL", "삭제테스트", "삭제테스트", "삭제테스트", "planning-research:삭제테스트",
+         delete_wf_id, "active", "", "", "", now, now),
+    )
+    conn.execute(
+        """INSERT INTO slack_workflow_source_files
+           (id, mapping_id, workflow_id, artifact_id, slack_file_id, filename, title, mimetype, size,
+            url_private, url_private_download, uploaded_user, uploaded_ts, status, rejection_reason,
+            metadata_json, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        ("swf_delete_cascade", mapping_id, delete_wf_id, None, "FDEL", "delete.pdf", "삭제 테스트", "application/pdf", 123,
+         "", "", "UDEL", "111.222", "stored", "", "{}", now, now),
+    )
+    conn.execute(
+        """INSERT INTO slack_material_collection_states
+           (workflow_id, mapping_id, status, source_file_count, rejected_file_count, last_message,
+            last_message_ts, last_error, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (delete_wf_id, mapping_id, "pending_confirmation", 1, 0, "자료 확인", "111.333", "", now),
+    )
+    conn.execute(
+        """INSERT INTO planning_worker_requests
+           (id, workflow_id, mapping_id, request_type, status, payload_json, source_event_id, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (request_id, delete_wf_id, mapping_id, "research", "queued", "{}", "EvDEL", now, now),
+    )
+    conn.execute(
+        """INSERT INTO planning_worker_results
+           (id, request_id, workflow_id, result_type, artifact_id, payload_json, created_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        ("pwr_result_delete_cascade", request_id, delete_wf_id, "research_report", None, "{}", now),
+    )
+r = client.delete(f"/workflows/{delete_wf_id}")
+check("DELETE workflow with Slack/worker rows status", r.status_code == 200, f"got {r.status_code}: {r.text}")
+with plugin_api.get_db() as conn:
+    workflow_count = conn.execute("SELECT count(*) FROM workflow_instances WHERE id=?", (delete_wf_id,)).fetchone()[0]
+    mapping_count = conn.execute("SELECT count(*) FROM slack_channel_project_mappings WHERE workflow_id=?", (delete_wf_id,)).fetchone()[0]
+    source_count = conn.execute("SELECT count(*) FROM slack_workflow_source_files WHERE workflow_id=?", (delete_wf_id,)).fetchone()[0]
+    material_state_count = conn.execute("SELECT count(*) FROM slack_material_collection_states WHERE workflow_id=?", (delete_wf_id,)).fetchone()[0]
+    worker_request_count = conn.execute("SELECT count(*) FROM planning_worker_requests WHERE workflow_id=?", (delete_wf_id,)).fetchone()[0]
+    worker_result_count = conn.execute("SELECT count(*) FROM planning_worker_results WHERE workflow_id=?", (delete_wf_id,)).fetchone()[0]
+check("deleted workflow row removed", workflow_count == 0, f"got {workflow_count}")
+check("deleted workflow Slack mapping rows removed", mapping_count == 0, f"got {mapping_count}")
+check("deleted workflow source file rows removed", source_count == 0, f"got {source_count}")
+check("deleted workflow material state removed", material_state_count == 0, f"got {material_state_count}")
+check("deleted workflow worker request rows removed", worker_request_count == 0, f"got {worker_request_count}")
+check("deleted workflow worker result rows removed", worker_result_count == 0, f"got {worker_result_count}")
+
 print("\n=== Workflow Detail / Activity Logs ===")
 r = client.get(f"/workflows/{wf_id}")
 check("GET /workflows/:id status", r.status_code == 200)
