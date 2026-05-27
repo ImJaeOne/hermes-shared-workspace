@@ -302,6 +302,59 @@ PY
 
 Railway에서는 파일 경로를 만들기 어렵다면 `HERMES_AX_NOTEBOOKLM_AUTH_JSON`에 JSON 파일 내용 전체를 secret env로 넣는 방식이 가장 단순합니다. `HERMES_AX_NOTEBOOKLM_AUTH_PATH`를 쓰려면 해당 파일이 실제 배포 컨테이너 내부 경로에 존재해야 합니다. 이 JSON은 로그인 세션이므로 비밀번호급 secret으로 취급하고 Git, PR, Slack, artifact, activity log에 남기지 않습니다.
 
+배포 환경에서 NotebookLM 인증 설정이 실제로 들어갔는지는 secret 값을 출력하지 말고 존재 여부와 JSON/path 유효성만 확인합니다. Railway UI에서는 대상 service의 `Variables`에서 key 존재 여부를 확인하고, 런타임 컨테이너에서는 `railway ssh` 접속 후 아래를 실행합니다.
+
+```bash
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+keys = [
+    'HERMES_AX_RESEARCH_ENGINE',
+    'HERMES_AX_RESEARCH_FALLBACK_ENGINE',
+    'HERMES_AX_NOTEBOOKLM_AUTH_JSON',
+    'HERMES_AX_NOTEBOOKLM_AUTH_PATH',
+    'HERMES_AX_NOTEBOOKLM_PROFILE',
+]
+for key in keys:
+    value = os.getenv(key, '')
+    if key.endswith('AUTH_JSON'):
+        print(key, 'present=', bool(value), 'length=', len(value))
+    else:
+        print(key, 'value=', value if value else '<unset>')
+
+auth_json = os.getenv('HERMES_AX_NOTEBOOKLM_AUTH_JSON', '').strip()
+if auth_json:
+    try:
+        json.loads(auth_json)
+        print('AUTH_JSON_valid_json=True')
+    except Exception as exc:
+        print('AUTH_JSON_valid_json=False', type(exc).__name__)
+
+auth_path = os.getenv('HERMES_AX_NOTEBOOKLM_AUTH_PATH', '').strip()
+if auth_path:
+    p = Path(auth_path)
+    print('AUTH_PATH_exists=', p.exists())
+    print('AUTH_PATH_is_file=', p.is_file())
+    print('AUTH_PATH_size=', p.stat().st_size if p.exists() else 0)
+    if p.is_file():
+        try:
+            json.loads(p.read_text())
+            print('AUTH_PATH_valid_json=True')
+        except Exception as exc:
+            print('AUTH_PATH_valid_json=False', type(exc).__name__)
+PY
+```
+
+해석 기준:
+
+- `HERMES_AX_RESEARCH_ENGINE=mock` 또는 unset이면 NotebookLM을 쓰지 않고 mock 엔진으로 실행됩니다.
+- `HERMES_AX_RESEARCH_ENGINE=notebooklm_py`인데 `AUTH_JSON`/`AUTH_PATH`/`PROFILE`이 모두 없으면 실제 NotebookLM 실행은 불가능하고 fallback이 있으면 mock으로 넘어갑니다.
+- `AUTH_JSON_present=True`와 `AUTH_JSON_valid_json=True`이면 Railway secret 방식이 최소 형식상 들어간 것입니다.
+- `AUTH_PATH_exists=True`, `AUTH_PATH_is_file=True`, `AUTH_PATH_valid_json=True`이면 컨테이너 내부 파일 경로 방식이 최소 형식상 들어간 것입니다.
+- `AUTH_PATH`와 `AUTH_JSON`을 둘 다 설정하면 현재 구현은 `AUTH_PATH`를 먼저 사용하므로, 파일 경로가 틀린 상태라면 `AUTH_JSON`이 있어도 실패할 수 있습니다. Railway에서는 보통 둘 중 하나만 쓰고, 가능하면 `AUTH_JSON` 방식을 권장합니다.
+
 자료 확인 답변이 들어오면 `planning_worker_requests`에 queued request가 쌓입니다. 운영/테스트에서는 아래 endpoint로 실행할 수 있습니다.
 
 ```text
