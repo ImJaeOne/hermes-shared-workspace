@@ -20,6 +20,7 @@
 # Dependencies
 node_modules/
 .venv/
+.venv-notebooklm-auth/
 venv/
 __pycache__/
 *.py[cod]
