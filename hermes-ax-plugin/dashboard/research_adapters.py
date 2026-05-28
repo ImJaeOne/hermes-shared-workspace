@@ -342,6 +342,7 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                         "source_upload_attempted_count": source_upload_metadata.get("attempted_count", 0),
                         "source_upload_succeeded_count": source_upload_metadata.get("succeeded_count", 0),
                         "source_upload_skipped_count": source_upload_metadata.get("skipped_count", 0),
+                        "source_upload_failed_count": source_upload_metadata.get("failed_count", 0),
                         "source_uploads": source_upload_metadata.get("sources", []),
                         "prompt_skill_id": prompt.get("skill_id") or DEFAULT_RESEARCH_SKILL_ID,
                     },
@@ -383,22 +384,50 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                 "mime_type": mime_type or "",
             }
             if file_path:
-                await client.sources.add_file(notebook_id, file_path, mime_type=mime_type, title=title, wait=True)
-                upload_sources.append({**diagnostic, "status": "uploaded", "method": "file"})
+                try:
+                    await client.sources.add_file(notebook_id, file_path, mime_type=mime_type, title=title, wait=True)
+                except Exception as exc:
+                    upload_sources.append(
+                        {
+                            **diagnostic,
+                            "status": "failed",
+                            "method": "file",
+                            "reason": "source_upload_failed",
+                            "exception_type": type(exc).__name__,
+                            "message": str(exc)[:500],
+                        }
+                    )
+                else:
+                    upload_sources.append({**diagnostic, "status": "uploaded", "method": "file"})
                 continue
 
             content = str(artifact.get("content") or "").strip()
             if not content:
                 content = json.dumps({k: v for k, v in source.items() if k != "artifact"}, ensure_ascii=False, indent=2)
-            await client.sources.add_text(notebook_id, title, content, wait=True)
-            upload_sources.append({**diagnostic, "status": "uploaded", "method": "text", "reason": "file_path_unavailable"})
+            try:
+                await client.sources.add_text(notebook_id, title, content, wait=True)
+            except Exception as exc:
+                upload_sources.append(
+                    {
+                        **diagnostic,
+                        "status": "failed",
+                        "method": "text",
+                        "reason": "source_upload_failed",
+                        "exception_type": type(exc).__name__,
+                        "message": str(exc)[:500],
+                    }
+                )
+            else:
+                upload_sources.append({**diagnostic, "status": "uploaded", "method": "text", "reason": "file_path_unavailable"})
 
         succeeded_count = sum(1 for item in upload_sources if item.get("status") == "uploaded")
         skipped_count = sum(1 for item in upload_sources if item.get("status") == "skipped")
+        failed_count = sum(1 for item in upload_sources if item.get("status") == "failed")
         return {
             "attempted_count": len(sources),
             "succeeded_count": succeeded_count,
             "skipped_count": skipped_count,
+            "failed_count": failed_count,
             "sources": upload_sources,
         }
 
