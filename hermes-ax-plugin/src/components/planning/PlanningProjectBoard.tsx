@@ -259,6 +259,23 @@ function ProjectDetail({ workflow, onOpenPipeline, onRequestDelete }: ProjectDet
   const [downloadError, setDownloadError] = useState("");
   const artifactRequestSeqRef = useRef(0);
   const completedCount = workflow.stages.filter((stage) => stage.is_completed).length;
+  const artifactHistory = useMemo(
+    () => [...workflow.artifacts]
+      .filter((artifact) => artifact.artifact_type === "research_report" || artifact.artifact_type === "revision_request")
+      .sort((a, b) => {
+        const versionDiff = (b.version ?? 0) - (a.version ?? 0);
+        if (versionDiff !== 0) return versionDiff;
+        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+      }),
+    [workflow.artifacts],
+  );
+  const recentActivityLogs = useMemo(
+    () => [...(workflow.activity_logs ?? [])]
+      .filter((log) => log.action.startsWith("slack.") || log.action.startsWith("worker."))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 5),
+    [workflow.activity_logs],
+  );
   const progressCount = Math.min(workflow.stages.length, completedCount + 1);
   const progressPercent = workflow.status === "completed"
     ? 100
@@ -419,6 +436,46 @@ function ProjectDetail({ workflow, onOpenPipeline, onRequestDelete }: ProjectDet
         </section>
       </div>
 
+      <section className="ax-planning-section-card">
+        <div className="ax-planning-section-header">
+          <h3>자료조사 결과 이력</h3>
+          <span>최신본과 수정·확정 기록</span>
+        </div>
+        {artifactHistory.length === 0 && recentActivityLogs.length === 0 ? (
+          <p className="ax-planning-muted">아직 자료조사 결과나 수정 이력이 없습니다.</p>
+        ) : (
+          <div className="ax-planning-history-grid">
+            <div className="ax-planning-history-list">
+              <strong>산출물 버전</strong>
+              {artifactHistory.length === 0 ? (
+                <p className="ax-planning-muted">자료조사 결과 산출물이 아직 없습니다.</p>
+              ) : artifactHistory.map((artifact) => (
+                <div key={artifact.id} className="ax-planning-history-row">
+                  <div>
+                    <span>{artifact.title}</span>
+                    <small>{getPlanningStageLabel(artifact.artifact_type)} · v{artifact.version ?? 1} · {formatDateTime(artifact.updated_at)}</small>
+                  </div>
+                  <StatusBadge status={artifact.status} />
+                </div>
+              ))}
+            </div>
+            <div className="ax-planning-history-list">
+              <strong>Slack/worker 기록</strong>
+              {recentActivityLogs.length === 0 ? (
+                <p className="ax-planning-muted">진행 기록이 아직 없습니다.</p>
+              ) : recentActivityLogs.map((log) => (
+                <div key={log.id} className="ax-planning-history-row">
+                  <div>
+                    <span>{formatActivityAction(log.action)}</span>
+                    <small>{log.actor_label || log.actor_kind} · {formatDateTime(log.created_at)}</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
       <section className="ax-planning-next-preview">
         <div>
           <h3>다음 단계 미리보기</h3>
@@ -576,6 +633,21 @@ function getArtifactDownloadName(artifact: Artifact): string {
         ? "json"
         : "bin";
   return `${safeTitle}.${ext}`;
+}
+
+function formatActivityAction(action: string): string {
+  const labels: Record<string, string> = {
+    "slack.material_files_collected": "자료 첨부 확인",
+    "slack.material_collection_confirmed": "자료조사 전달",
+    "slack.worker_request_created": "worker 요청 생성",
+    "worker.request_running": "worker 실행 중",
+    "worker.request_completed": "worker 완료",
+    "slack.worker_result_received": "결과 도착",
+    "slack.revision_requested": "수정 요청",
+    "slack.research_confirmed": "최종 확정",
+    "slack.worker_result_failed": "worker 오류",
+  };
+  return labels[action] || action.replace(/^slack\./, "Slack ").replace(/^worker\./, "worker ");
 }
 
 function formatDateTime(dateStr: string): string {

@@ -519,6 +519,40 @@ def _post_slack_message(channel_id: str, message: str) -> dict[str, Any]:
     return {"sent": True, "ts": str(data.get("ts") or "")}
 
 
+def _update_slack_message(channel_id: str, message_ts: str, message: str) -> dict[str, Any]:
+    """Update the single planning progress message, falling back at caller level."""
+    if _env_bool("HERMES_AX_SLACK_DRY_RUN"):
+        return {"sent": True, "ts": message_ts or f"dry-run-{channel_id}", "updated": bool(message_ts), "dry_run": True}
+    if not message_ts:
+        return {"sent": False, "reason": "missing_message_ts"}
+
+    result = _call_slack_api("chat.update", {"channel": channel_id, "ts": message_ts, "text": message})
+    if not result.get("ok"):
+        return {"sent": False, "reason": result.get("reason") or "slack_api_error", "error": result.get("error") or "unknown_error"}
+    data = result.get("data") or {}
+    return {"sent": True, "ts": str(data.get("ts") or message_ts), "updated": True}
+
+
+def _send_progress_message(conn: sqlite3.Connection, mapping: sqlite3.Row, message: str) -> dict[str, Any]:
+    """Post once, then update the same Slack status message for planning progress."""
+    state = conn.execute(
+        "SELECT last_message_ts FROM slack_material_collection_states WHERE workflow_id=?",
+        (mapping["workflow_id"],),
+    ).fetchone()
+    existing_ts = str(state["last_message_ts"] or "").strip() if state else ""
+    if existing_ts:
+        update_result = _update_slack_message(mapping["channel_id"], existing_ts, message)
+        if update_result.get("sent"):
+            return update_result
+        post_result = _post_slack_message(mapping["channel_id"], message)
+        if not post_result.get("sent"):
+            post_result["update_error"] = update_result.get("error") or update_result.get("reason") or "update_failed"
+        else:
+            post_result["fallback_from_update"] = True
+        return post_result
+    return _post_slack_message(mapping["channel_id"], message)
+
+
 def _post_onboarding_message(channel_id: str, message: str) -> dict[str, Any]:
     return _post_slack_message(channel_id, message)
 
@@ -858,6 +892,21 @@ def _latest_research_artifact(conn: sqlite3.Connection, workflow_id: str) -> dic
     return row_to_dict(row) if row else None
 
 
+def _finalize_latest_research_artifact(conn: sqlite3.Connection, workflow_id: str) -> str:
+    row = conn.execute(
+        """SELECT id FROM artifacts
+           WHERE workflow_id=? AND artifact_type='research_report'
+           ORDER BY is_latest DESC, version DESC, created_at DESC LIMIT 1""",
+        (workflow_id,),
+    ).fetchone()
+    if not row:
+        return ""
+    now = _now()
+    conn.execute("UPDATE artifacts SET status='final', is_latest=1, updated_at=? WHERE id=?", (now, row["id"]))
+    _emit_event(conn, "artifact_updated", workflow_id, row["id"])
+    return str(row["id"])
+
+
 def _build_worker_payload(
     conn: sqlite3.Connection,
     *,
@@ -1077,7 +1126,8 @@ def _handle_review_reply_event(
             revision_attachments=attachments,
         )
         message = "수정 요청 파일을 확인했습니다. 기획팀 임사원에게 자료조사 worker 수정 실행을 전달했습니다."
-        send_result = _post_slack_message(channel_id, message)
+        send_result = _send_progress_message(conn, mapping, message)
+        _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="revision_running")
         _record_slack_activity(
             conn,
             action="slack.revision_requested",
@@ -1099,6 +1149,7 @@ def _handle_review_reply_event(
         }
 
     if _positive_reply(text):
+        final_artifact_id = _finalize_latest_research_artifact(conn, mapping["workflow_id"])
         _transition_planning_stage(
             conn,
             mapping["workflow_id"],
@@ -1108,13 +1159,14 @@ def _handle_review_reply_event(
             status="completed",
         )
         message = "자료조사 결과를 확정했습니다. 감사합니다."
-        send_result = _post_slack_message(channel_id, message)
+        send_result = _send_progress_message(conn, mapping, message)
+        _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="research_confirmed")
         _record_slack_activity(
             conn,
             action="slack.research_confirmed",
             workflow_id=mapping["workflow_id"],
             target_id=mapping["id"],
-            metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "dry_run": bool(send_result.get("dry_run"))},
+            metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "artifact_id": final_artifact_id, "dry_run": bool(send_result.get("dry_run"))},
         )
         return {
             "ok": bool(send_result.get("sent")),
@@ -1123,6 +1175,7 @@ def _handle_review_reply_event(
             "channel_id": channel_id,
             "review_status": "confirmed",
             "current_stage_id": STAGE_RESEARCH_CONFIRMED,
+            "artifact_id": final_artifact_id,
             "message": message,
             "message_sent": bool(send_result.get("sent")),
             "message_ts": send_result.get("ts") or "",
@@ -1145,7 +1198,8 @@ def _handle_review_reply_event(
             revision_attachments=[],
         )
         message = "수정 요청을 확인했습니다. 기획팀 임사원에게 자료조사 worker 수정 실행을 전달했습니다."
-        send_result = _post_slack_message(channel_id, message)
+        send_result = _send_progress_message(conn, mapping, message)
+        _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="revision_running")
         _record_slack_activity(
             conn,
             action="slack.revision_requested",
@@ -1272,7 +1326,7 @@ def _handle_material_text_event(
     if intent == "more_needed":
         message = _material_more_needed_message()
         material_status = "awaiting_more_materials"
-        send_result = _post_slack_message(channel_id, message)
+        send_result = _send_progress_message(conn, mapping, message)
         now = _now()
         conn.execute(
             "UPDATE workflow_instances SET current_stage_id='p_material_waiting', assignee=?, updated_at=? WHERE id=? AND current_stage_id='p_material_waiting'",
@@ -1296,7 +1350,7 @@ def _handle_material_text_event(
         )
         message = _material_confirmed_message()
         material_status = "confirmed"
-        send_result = _post_slack_message(channel_id, message)
+        send_result = _send_progress_message(conn, mapping, message)
         _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status=material_status)
         _record_slack_activity(
             conn,
@@ -1455,7 +1509,7 @@ def _handle_message_files_event(conn: sqlite3.Connection, *, payload: dict[str, 
     if stored_files:
         _transition_to_material_waiting(conn, mapping["workflow_id"])
     message = _material_confirmation_message(stored_files, rejected_files)
-    send_result = _post_slack_message(channel_id, message)
+    send_result = _send_progress_message(conn, mapping, message)
     _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result)
     _record_slack_activity(
         conn,
@@ -1736,7 +1790,8 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
     if terminal_status == "failed":
         error_message = str(payload.get("error") or payload.get("message") or "worker_failed").strip()
         message = "자료조사 작업 중 오류가 발생했습니다. 기획팀 임팀장이 확인 후 다시 안내드리겠습니다."
-        send_result = _post_slack_message(mapping["channel_id"], message)
+        send_result = _send_progress_message(conn, mapping, message)
+        _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="worker_failed")
         _record_slack_activity(
             conn,
             action="slack.worker_result_failed",
@@ -1782,7 +1837,8 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
         status="active",
     )
     message = _review_message_for_result(title)
-    send_result = _post_slack_message(mapping["channel_id"], message)
+    send_result = _send_progress_message(conn, mapping, message)
+    _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="review_waiting")
     _record_slack_activity(
         conn,
         action="slack.worker_result_received",
