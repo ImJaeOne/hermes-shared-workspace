@@ -579,6 +579,37 @@ try:
     check("Slack onboarding post follows join", len(slack_api_calls) == 2 and slack_api_calls[1]["payload"].get("channel") == "CJOINAPI1" and join_result.get("message_sent") is True, join_result)
     check("Slack API calls use bot token", all(c.get("auth") == "Bearer test-bot-token" for c in slack_api_calls), slack_api_calls)
 
+    def fake_progress_update(req, timeout=None):
+        url = request_url(req)
+        payload = request_json(req)
+        auth = req.headers.get("Authorization") or req.headers.get("authorization")
+        if url.endswith("/chat.update"):
+            slack_api_calls.append({"method": "chat.update", "payload": payload, "auth": auth})
+            return FakeHTTPResponse(payload={"ok": True, "ts": payload.get("ts")})
+        if url.endswith("/chat.postMessage"):
+            slack_api_calls.append({"method": "chat.postMessage", "payload": payload, "auth": auth})
+            return FakeHTTPResponse(payload={"ok": True, "ts": "1710000200.999999"})
+        raise AssertionError(f"unexpected Slack API call: {url}")
+
+    slack_api_calls.clear()
+    slack_onboarding_api.urllib.request.urlopen = fake_progress_update
+    with plugin_api.get_db() as conn:
+        mapping = conn.execute("SELECT * FROM slack_channel_project_mappings WHERE channel_id=?", ("CJOINAPI1",)).fetchone()
+        slack_onboarding_api._upsert_material_state(
+            conn,
+            mapping=mapping,
+            message="기획팀 임팀장이 자료를 확인하고 있습니다. 잠시만 기다려주세요.",
+            send_result={"sent": True, "ts": "1710000200.000100"},
+        )
+        progress_result = slack_onboarding_api._send_progress_message(
+            conn,
+            mapping,
+            "기획팀 임사원이 자료를 확인 중입니다. 완료되면 이 채널에 자료조사 결과를 전달드리겠습니다.",
+        )
+    check("Slack progress updates existing status message", progress_result.get("sent") is True and progress_result.get("updated") is True, progress_result)
+    check("Slack progress uses chat.update without new post", [c["method"] for c in slack_api_calls] == ["chat.update"], slack_api_calls)
+    check("Slack progress update keeps original ts", slack_api_calls and slack_api_calls[0]["payload"].get("ts") == "1710000200.000100", slack_api_calls)
+
     slack_api_calls.clear()
     join_again_payload = slack_event_payload(event_id="EvJOINAPI1B", channel_id="CJOINAPI1", channel_name="조인테스트")
     join_again_payload["event"]["type"] = "channel_created"
@@ -778,8 +809,10 @@ with plugin_api.get_db() as conn:
     report_artifact = conn.execute("SELECT * FROM artifacts WHERE workflow_id=? AND artifact_type='research_report' AND stage_id='p_user_review_waiting' ORDER BY created_at DESC LIMIT 1", (slack_wf_id,)).fetchone()
     wf_review = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (slack_wf_id,)).fetchone()
     result_activity = conn.execute("SELECT * FROM activity_logs WHERE workflow_id=? AND action=?", (slack_wf_id, "slack.worker_result_received")).fetchone()
+    review_progress = conn.execute("SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (slack_wf_id,)).fetchone()
     check("Worker result creates research report artifact", report_artifact is not None and "테스트전자 자료조사 결과" in report_artifact["title"], dict(report_artifact) if report_artifact else "")
     check("Worker result review state persisted", wf_review["current_stage_id"] == "p_user_review_waiting" and wf_review["assignee"] == "기획팀 임팀장", dict(wf_review))
+    check("Worker result updates Slack progress state", review_progress is not None and review_progress["status"] == "review_waiting" and review_progress["last_message_ts"] == worker_result.get("message_ts"), dict(review_progress) if review_progress else "")
     check("Worker result activity logged", result_activity is not None, dict(result_activity) if result_activity else "")
 
 review_confirm_payload = slack_message_text_payload("EvREVIEWCONFIRM1", "확정", channel_id="CLOCALTEST")
@@ -791,7 +824,11 @@ check("Slack review positive confirms research", review_confirm_result.get("revi
 with plugin_api.get_db() as conn:
     wf_confirmed = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (slack_wf_id,)).fetchone()
     confirm_review_activity = conn.execute("SELECT * FROM activity_logs WHERE workflow_id=? AND action=?", (slack_wf_id, "slack.research_confirmed")).fetchone()
+    final_report = conn.execute("SELECT * FROM artifacts WHERE workflow_id=? AND artifact_type='research_report' AND is_latest=1", (slack_wf_id,)).fetchone()
+    confirmed_progress = conn.execute("SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (slack_wf_id,)).fetchone()
     check("Slack review confirmation workflow completed", wf_confirmed["current_stage_id"] == "p_research_confirmed" and wf_confirmed["status"] == "completed", dict(wf_confirmed))
+    check("Slack review confirmation marks latest report final", final_report is not None and final_report["status"] == "final", dict(final_report) if final_report else "")
+    check("Slack review confirmation updates progress message", confirmed_progress is not None and confirmed_progress["status"] == "research_confirmed" and confirmed_progress["last_message_ts"] == review_confirm_result.get("message_ts"), dict(confirmed_progress) if confirmed_progress else "")
     check("Slack review confirmation activity logged", confirm_review_activity is not None, dict(confirm_review_activity) if confirm_review_activity else "")
 
 revision_onboard_payload = slack_event_payload(event_id="EvREVONBOARD1", channel_id="CREVTEST", channel_name="수정테스트")
