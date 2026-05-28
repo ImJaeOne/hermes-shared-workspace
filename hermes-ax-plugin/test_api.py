@@ -156,6 +156,68 @@ if research_adapters:
         {"files": fake_client.sources.files, "texts": fake_client.sources.texts, "expected": expected_file_path},
     )
 
+    four_source_files = []
+    original_names = [
+        "국내외 오가노이드 관련 기업, 연구소 현황.pdf",
+        "기관투자자 요청자료.pdf",
+        "기관투자자 추가질의 및 답변.pdf",
+        "IR Book_Jan.2026_압축본.pdf",
+    ]
+    for index, original_name in enumerate(original_names, start=1):
+        generated_artifact_id = f"art_notebooklm_source_{index}"
+        stored_item = storage.write_bytes(
+            workflow_id="wf_adapter_four_sources",
+            stage_id="p_material_waiting",
+            artifact_id=generated_artifact_id,
+            content=f"%PDF-1.7 source {index}".encode("utf-8"),
+            mime_type="application/pdf",
+            original_filename=original_name,
+        )
+        four_source_files.append(
+            {
+                "filename": f"{generated_artifact_id}.pdf",
+                "title": f"{generated_artifact_id}.pdf",
+                "artifact": {
+                    "id": generated_artifact_id,
+                    "title": f"{generated_artifact_id}.pdf",
+                    "content": "",
+                    "file_path": stored_item.file_path,
+                    "storage_backend": stored_item.storage_backend,
+                    "storage_key": stored_item.storage_key,
+                    "mime_type": stored_item.mime_type,
+                    "original_filename": original_name,
+                },
+            }
+        )
+    four_source_client = FakeNotebookClient()
+    upload_metadata = asyncio.run(
+        research_adapters.NotebookLmPyResearchAdapter()._add_sources(
+            four_source_client,
+            "notebook-four-sources",
+            {"source_files": four_source_files},
+        )
+    )
+    check(
+        "NotebookLM adapter uploads all four stored Slack artifacts",
+        len(four_source_client.sources.files) == 4 and not four_source_client.sources.texts,
+        {"files": four_source_client.sources.files, "texts": four_source_client.sources.texts},
+    )
+    check(
+        "NotebookLM adapter prefers original filenames over generated artifact names",
+        [item.get("title") for item in four_source_client.sources.files] == original_names,
+        four_source_client.sources.files,
+    )
+    check(
+        "NotebookLM adapter returns per-source upload diagnostics",
+        isinstance(upload_metadata, dict)
+        and upload_metadata.get("attempted_count") == 4
+        and upload_metadata.get("succeeded_count") == 4
+        and upload_metadata.get("skipped_count") == 0
+        and len(upload_metadata.get("sources", [])) == 4
+        and all(item.get("status") == "uploaded" for item in upload_metadata.get("sources", [])),
+        upload_metadata,
+    )
+
 
 class FakeHTTPResponse:
     def __init__(self, *, payload: dict | None = None, body: bytes | None = None):
@@ -853,6 +915,103 @@ with plugin_api.get_db() as conn:
     check("Worker research payload is standardized", research_payload.get("schema_version") == 1 and research_payload.get("task_type") == "initial_research" and research_payload.get("workflow_id") == slack_wf_id and research_payload.get("stage_id") == "p_research_running", research_payload)
     check("Worker research payload includes Slack and source files", research_payload.get("slack", {}).get("channel_id") == "CLOCALTEST" and len(research_payload.get("source_files", [])) == 2, research_payload)
     check("Worker research payload includes prompt and engine metadata", research_payload.get("research_engine") == "mock" and research_payload.get("prompt", {}).get("source") == "skills" and research_payload.get("prompt", {}).get("skill_id"), research_payload)
+
+    four_wf_id = "wi_four_source_payload"
+    four_mapping_id = "scpm_four_source_payload"
+    now = plugin_api._now()
+    tmpl = conn.execute("SELECT * FROM workflow_templates WHERE id=?", ("planning_research_mvp_v1",)).fetchone()
+    conn.execute(
+        """INSERT INTO workflow_instances
+           (id, template_id, agent_type_id, title, current_stage_id, status, priority, assignee, metadata_json, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            four_wf_id,
+            "planning_research_mvp_v1",
+            tmpl["agent_type_id"],
+            "[세라트젠] 기획 자료조사",
+            "p_material_waiting",
+            "active",
+            0,
+            "기획팀 임팀장",
+            json.dumps({"company_name": "세라트젠", "project_key": "planning-research:세라트젠"}, ensure_ascii=False),
+            now,
+            now,
+        ),
+    )
+    conn.execute(
+        """INSERT INTO slack_channel_project_mappings
+           (id, team_id, enterprise_id, channel_id, channel_name, normalized_channel_name, company_name,
+            project_key, workflow_id, status, onboarding_message, onboarding_message_ts, onboarding_message_sent_at,
+            first_event_id, last_event_id, last_error, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            four_mapping_id,
+            "TLOCAL",
+            "",
+            "CFOURSOURCE",
+            "세라트젠",
+            "세라트젠",
+            "세라트젠",
+            "planning-research:세라트젠",
+            four_wf_id,
+            "active",
+            "",
+            "",
+            None,
+            "EvFOURONBOARD",
+            "EvFOURCONFIRM",
+            "",
+            now,
+            now,
+        ),
+    )
+    for index, original_name in enumerate([
+        "국내외 오가노이드 관련 기업, 연구소 현황.pdf",
+        "기관투자자 요청자료.pdf",
+        "기관투자자 추가질의 및 답변.pdf",
+        "IR Book_Jan.2026_압축본.pdf",
+    ], start=1):
+        conn.execute(
+            """INSERT INTO slack_workflow_source_files
+               (id, mapping_id, workflow_id, artifact_id, slack_file_id, filename, title, mimetype, size,
+                url_private, url_private_download, uploaded_user, uploaded_ts, status, rejection_reason,
+                metadata_json, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                f"sfs_four_{index}",
+                four_mapping_id,
+                four_wf_id,
+                None,
+                f"FFOUR{index}",
+                original_name,
+                original_name,
+                "application/pdf",
+                1024 + index,
+                f"https://slack.example/files/FFOUR{index}",
+                f"https://slack.example/files/FFOUR{index}/download",
+                "UCLIENTFOUR",
+                f"1710000{index}",
+                "stored",
+                "",
+                "{}",
+                now,
+                now,
+            ),
+        )
+    four_mapping = conn.execute("SELECT * FROM slack_channel_project_mappings WHERE id=?", (four_mapping_id,)).fetchone()
+    four_request = slack_onboarding_api._create_worker_request(conn, mapping=four_mapping, request_type="research", source_event_id="EvFOURCONFIRM")
+    four_payload = json.loads(four_request["payload_json"])
+    check(
+        "Worker research payload keeps all four stored Slack source files",
+        [item.get("filename") for item in four_payload.get("source_files", [])]
+        == [
+            "국내외 오가노이드 관련 기업, 연구소 현황.pdf",
+            "기관투자자 요청자료.pdf",
+            "기관투자자 추가질의 및 답변.pdf",
+            "IR Book_Jan.2026_압축본.pdf",
+        ],
+        four_payload,
+    )
 
 research_request_id = research_request["id"] if research_request else "missing-research-request"
 r = client.post(f"/worker/requests/{research_request_id}/run")
