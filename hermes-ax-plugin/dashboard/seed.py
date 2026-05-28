@@ -184,6 +184,14 @@ def _seed_core_definitions(conn: sqlite3.Connection, now: str):
             "INSERT OR IGNORE INTO skills (id, name, description, content, agent_type_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
             (sk["id"], sk["name"], sk["description"], sk["content"], sk["agent_type_id"], now, now),
         )
+        if sk["id"] == "skill_001":
+            conn.execute(
+                """UPDATE skills
+                   SET name=?, description=?, content=?, agent_type_id=?, updated_at=?
+                   WHERE id=?
+                     AND (COALESCE(agent_type_id, '') != 'planning' OR name NOT LIKE '%자료조사%')""",
+                (sk["name"], sk["description"], sk["content"], sk["agent_type_id"], now, sk["id"]),
+            )
 
 
 def seed_if_empty(conn: sqlite3.Connection, now_fn: Callable[[], str], emit_event: Callable[..., None]):

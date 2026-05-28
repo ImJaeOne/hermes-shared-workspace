@@ -105,11 +105,15 @@ if research_adapters:
                 os.environ[key] = value
 
     class FakeNotebookSources:
-        def __init__(self):
+        def __init__(self, fail_file_title: str = ""):
             self.files = []
             self.texts = []
+            self.fail_file_title = fail_file_title
 
         async def add_file(self, notebook_id, file_path, **kwargs):
+            title = str(kwargs.get("title") or "")
+            if self.fail_file_title and title == self.fail_file_title:
+                raise TimeoutError(f"Source {title} not ready after 120.0s")
             self.files.append({"notebook_id": notebook_id, "file_path": file_path, **kwargs})
 
         async def add_text(self, notebook_id, title, content, **kwargs):
@@ -216,6 +220,33 @@ if research_adapters:
         and len(upload_metadata.get("sources", [])) == 4
         and all(item.get("status") == "uploaded" for item in upload_metadata.get("sources", [])),
         upload_metadata,
+    )
+
+    timeout_client = FakeNotebookClient()
+    timeout_client.sources = FakeNotebookSources(fail_file_title=original_names[1])
+    timeout_metadata = asyncio.run(
+        research_adapters.NotebookLmPyResearchAdapter()._add_sources(
+            timeout_client,
+            "notebook-timeout-sources",
+            {"source_files": four_source_files},
+        )
+    )
+    check(
+        "NotebookLM adapter continues after one source upload timeout",
+        len(timeout_client.sources.files) == 3
+        and timeout_metadata.get("attempted_count") == 4
+        and timeout_metadata.get("succeeded_count") == 3
+        and timeout_metadata.get("failed_count") == 1,
+        {"files": timeout_client.sources.files, "metadata": timeout_metadata},
+    )
+    failed_upload = next((item for item in timeout_metadata.get("sources", []) if item.get("status") == "failed"), {})
+    check(
+        "NotebookLM adapter records per-source timeout diagnostics",
+        failed_upload.get("title") == original_names[1]
+        and failed_upload.get("reason") == "source_upload_failed"
+        and failed_upload.get("exception_type") == "TimeoutError"
+        and "not ready" in failed_upload.get("message", ""),
+        failed_upload,
     )
 
 
@@ -1578,15 +1609,29 @@ legacy_seed_conn.execute(
     "INSERT INTO agent_types (id, name, description, icon, color, config_json, created_at) VALUES (?,?,?,?,?,?,?)",
     ("marketing", "Marketing Agent", "Legacy production seed", "Megaphone", "#f97316", "{}", "2025-01-01T00:00:00Z"),
 )
+legacy_seed_conn.execute(
+    "INSERT INTO skills (id, name, description, content, agent_type_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+    (
+        "skill_001",
+        "초기 연락 이메일 작성",
+        "Legacy wrong planning skill row",
+        "# 초기 연락 이메일 작성\n\n회사에 보낼 이메일을 작성합니다.",
+        "sales",
+        "2025-01-01T00:00:00Z",
+        "2025-01-01T00:00:00Z",
+    ),
+)
 plugin_api.seed_if_empty(legacy_seed_conn, plugin_api._now, lambda *args, **kwargs: None)
 planning_agent = legacy_seed_conn.execute("SELECT * FROM agent_types WHERE id='planning'").fetchone()
 planning_template = legacy_seed_conn.execute("SELECT * FROM workflow_templates WHERE id='planning_research_mvp_v1'").fetchone()
 planning_stage_count = legacy_seed_conn.execute("SELECT count(*) FROM stage_definitions WHERE template_id='planning_research_mvp_v1'").fetchone()[0]
+research_skill = legacy_seed_conn.execute("SELECT * FROM skills WHERE id='skill_001'").fetchone()
 legacy_agent = legacy_seed_conn.execute("SELECT * FROM agent_types WHERE id='marketing'").fetchone()
 check("existing DB seed preserves legacy agent", legacy_agent is not None and legacy_agent["name"] == "Marketing Agent", dict(legacy_agent) if legacy_agent else "")
 check("existing DB seed adds planning agent", planning_agent is not None, "planning missing")
 check("existing DB seed adds planning template", planning_template is not None, "planning_research_mvp_v1 missing")
 check("existing DB seed adds planning stages", planning_stage_count == 6, f"got {planning_stage_count}")
+check("existing DB seed repairs stale research skill", research_skill is not None and research_skill["name"] == "기획 자료조사 결과 정리" and research_skill["agent_type_id"] == "planning", dict(research_skill) if research_skill else "")
 legacy_seed_conn.close()
 
 print("\n=== Artifacts ===")
