@@ -93,14 +93,37 @@ def _task_label(payload: dict[str, Any]) -> str:
     return "수정 자료조사" if payload.get("task_type") == "revision" else "자료조사"
 
 
+def _looks_like_generated_artifact_name(value: str, artifact: dict[str, Any]) -> bool:
+    """Detect storage-generated artifact names such as ``art_*.pdf``."""
+    name = Path(value or "").name.strip()
+    if not name:
+        return False
+    stem = Path(name).stem
+    artifact_id = str(artifact.get("id") or "").strip()
+    if stem.startswith("art_"):
+        return True
+    return bool(artifact_id and (stem == artifact_id or name.startswith(f"{artifact_id}.")))
+
+
 def _source_title(source: dict[str, Any], index: int) -> str:
-    return str(
-        source.get("title")
-        or source.get("filename")
-        or source.get("original_filename")
-        or source.get("slack_file_id")
-        or f"자료 {index + 1}"
-    ).strip()
+    artifact = source.get("artifact") if isinstance(source.get("artifact"), dict) else {}
+    artifact_original = str(artifact.get("original_filename") or "").strip()
+    candidates = [
+        str(source.get("title") or "").strip(),
+        str(source.get("filename") or "").strip(),
+        str(source.get("original_filename") or "").strip(),
+        artifact_original,
+        str(artifact.get("title") or "").strip(),
+        str(source.get("slack_file_id") or "").strip(),
+        f"자료 {index + 1}",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if artifact_original and candidate != artifact_original and _looks_like_generated_artifact_name(candidate, artifact):
+            continue
+        return candidate
+    return f"자료 {index + 1}"
 
 
 def _resolve_local_artifact_path(artifact: dict[str, Any]) -> str:
@@ -303,7 +326,7 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
             notebook = await client.notebooks.create(title)
             notebook_id = str(getattr(notebook, "id", ""))
             try:
-                await self._add_sources(client, notebook_id, payload)
+                source_upload_metadata = await self._add_sources(client, notebook_id, payload)
                 answer = await client.chat.ask(notebook_id, self._build_question(payload, prompt))
                 content = str(getattr(answer, "answer", "") or answer).strip()
                 if not content:
@@ -316,6 +339,10 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                         "engine": self.engine,
                         "notebook_id": notebook_id,
                         "source_file_count": len(payload.get("source_files") or []),
+                        "source_upload_attempted_count": source_upload_metadata.get("attempted_count", 0),
+                        "source_upload_succeeded_count": source_upload_metadata.get("succeeded_count", 0),
+                        "source_upload_skipped_count": source_upload_metadata.get("skipped_count", 0),
+                        "source_uploads": source_upload_metadata.get("sources", []),
                         "prompt_skill_id": prompt.get("skill_id") or DEFAULT_RESEARCH_SKILL_ID,
                     },
                 )
@@ -326,27 +353,54 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                     except Exception:
                         pass
 
-    async def _add_sources(self, client: Any, notebook_id: str, payload: dict[str, Any]) -> None:
+    async def _add_sources(self, client: Any, notebook_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         sources = payload.get("source_files") if isinstance(payload.get("source_files"), list) else []
+        upload_sources: list[dict[str, Any]] = []
         if not sources:
             await client.sources.add_text(notebook_id, "AX 자료조사 입력", json.dumps(payload, ensure_ascii=False), wait=True)
-            return
+            return {"attempted_count": 0, "succeeded_count": 0, "skipped_count": 0, "sources": upload_sources}
 
         for index, source in enumerate(sources):
             if not isinstance(source, dict):
+                upload_sources.append(
+                    {
+                        "index": index,
+                        "status": "skipped",
+                        "reason": "invalid_source_payload",
+                    }
+                )
                 continue
             title = _source_title(source, index)
             artifact = source.get("artifact") if isinstance(source.get("artifact"), dict) else {}
             file_path = _resolve_local_artifact_path(artifact)
             mime_type = str(source.get("mimetype") or artifact.get("mime_type") or artifact.get("content_type") or "").strip() or None
+            diagnostic = {
+                "index": index,
+                "title": title,
+                "filename": str(source.get("filename") or "").strip(),
+                "original_filename": str(source.get("original_filename") or artifact.get("original_filename") or "").strip(),
+                "artifact_id": str(source.get("artifact_id") or artifact.get("id") or "").strip(),
+                "mime_type": mime_type or "",
+            }
             if file_path:
                 await client.sources.add_file(notebook_id, file_path, mime_type=mime_type, title=title, wait=True)
+                upload_sources.append({**diagnostic, "status": "uploaded", "method": "file"})
                 continue
 
             content = str(artifact.get("content") or "").strip()
             if not content:
                 content = json.dumps({k: v for k, v in source.items() if k != "artifact"}, ensure_ascii=False, indent=2)
             await client.sources.add_text(notebook_id, title, content, wait=True)
+            upload_sources.append({**diagnostic, "status": "uploaded", "method": "text", "reason": "file_path_unavailable"})
+
+        succeeded_count = sum(1 for item in upload_sources if item.get("status") == "uploaded")
+        skipped_count = sum(1 for item in upload_sources if item.get("status") == "skipped")
+        return {
+            "attempted_count": len(sources),
+            "succeeded_count": succeeded_count,
+            "skipped_count": skipped_count,
+            "sources": upload_sources,
+        }
 
     def _build_question(self, payload: dict[str, Any], prompt: dict[str, Any]) -> str:
         company = _company_name(payload)
