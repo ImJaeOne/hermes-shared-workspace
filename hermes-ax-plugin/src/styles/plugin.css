@@ -186,6 +186,16 @@
   color: var(--midground);
 }
 
+.ax-btn-danger {
+  background: color-mix(in srgb, var(--color-destructive, #fb2c36) 14%, transparent);
+  color: var(--color-destructive, #fb2c36);
+  border-color: color-mix(in srgb, var(--color-destructive, #fb2c36) 35%, transparent);
+}
+
+.ax-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-destructive, #fb2c36) 22%, transparent);
+}
+
 .ax-btn-sm {
   font-size: 0.65rem;
   padding: 4px 10px;
@@ -1893,6 +1903,25 @@
 .ax-planning-detail-meta {
   font-size: 0.68rem;
   color: var(--color-muted-foreground);
+}
+
+.ax-planning-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ax-planning-delete-warning {
+  margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.ax-planning-delete-warning strong {
+  color: var(--color-destructive, #fb2c36);
 }
 
 .ax-planning-research-summary,

@@ -175,23 +175,39 @@ def delete_workflow(wf_id: str, request: Request):
         wf = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (wf_id,)).fetchone()
         if not wf:
             raise HTTPException(404, "Workflow not found")
+
+        mapping_ids = [
+            r["id"]
+            for r in conn.execute("SELECT id FROM slack_channel_project_mappings WHERE workflow_id=?", (wf_id,)).fetchall()
+        ]
         art_ids = [r["id"] for r in conn.execute("SELECT id FROM artifacts WHERE workflow_id=?", (wf_id,)).fetchall()]
-        for aid in art_ids:
-            conn.execute("DELETE FROM comments WHERE artifact_id=?", (aid,))
-        conn.execute("DELETE FROM artifacts WHERE workflow_id=?", (wf_id,))
-        conn.execute("DELETE FROM stage_transitions WHERE workflow_id=?", (wf_id,))
-        conn.execute("DELETE FROM approval_requests WHERE workflow_id=?", (wf_id,))
-        conn.execute("DELETE FROM workflow_instances WHERE id=?", (wf_id,))
-        _emit_event(conn, "workflow_deleted", wf_id)
+
         _record_user_activity(
             conn,
             user=user,
             action="workflow.delete",
             target_type="workflow",
-            workflow_id=wf_id,
+            workflow_id=None,
             target_id=wf_id,
-            metadata={"title": wf["title"]},
+            metadata={"title": wf["title"], "workflow_id": wf_id},
         )
+
+        for mapping_id in mapping_ids:
+            conn.execute("UPDATE slack_event_receipts SET mapping_id=NULL WHERE mapping_id=?", (mapping_id,))
+        conn.execute("UPDATE slack_event_receipts SET workflow_id=NULL WHERE workflow_id=?", (wf_id,))
+        conn.execute("DELETE FROM planning_worker_results WHERE workflow_id=?", (wf_id,))
+        conn.execute("DELETE FROM planning_worker_requests WHERE workflow_id=?", (wf_id,))
+        conn.execute("DELETE FROM slack_workflow_source_files WHERE workflow_id=?", (wf_id,))
+        conn.execute("DELETE FROM slack_material_collection_states WHERE workflow_id=?", (wf_id,))
+        conn.execute("DELETE FROM slack_channel_project_mappings WHERE workflow_id=?", (wf_id,))
+        for aid in art_ids:
+            conn.execute("DELETE FROM comments WHERE artifact_id=?", (aid,))
+        conn.execute("DELETE FROM artifacts WHERE workflow_id=?", (wf_id,))
+        conn.execute("DELETE FROM stage_transitions WHERE workflow_id=?", (wf_id,))
+        conn.execute("DELETE FROM approval_requests WHERE workflow_id=?", (wf_id,))
+        conn.execute("DELETE FROM activity_logs WHERE workflow_id=?", (wf_id,))
+        conn.execute("DELETE FROM workflow_instances WHERE id=?", (wf_id,))
+        _emit_event(conn, "workflow_deleted", wf_id)
     return {"ok": True}
 
 
