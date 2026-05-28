@@ -908,6 +908,28 @@ def _mapping_for_workflow(conn: sqlite3.Connection, workflow_id: str) -> sqlite3
     ).fetchone()
 
 
+def _mapping_value(mapping: sqlite3.Row | dict[str, Any], key: str, default: str = "") -> str:
+    try:
+        value = mapping[key]
+    except (KeyError, IndexError, TypeError):
+        value = default
+    return str(value or default).strip()
+
+
+def _mapping_table_has_column(conn: sqlite3.Connection, column: str) -> bool:
+    return any(row[1] == column for row in conn.execute("PRAGMA table_info(slack_channel_project_mappings)").fetchall())
+
+
+def _payload_notebook_id(payload: dict[str, Any]) -> str:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    for source in (metadata, result, payload):
+        notebook_id = str(source.get("notebook_id") or "").strip()
+        if notebook_id:
+            return notebook_id
+    return ""
+
+
 def _workflow_company_name(wf: sqlite3.Row | dict[str, Any]) -> str:
     try:
         metadata = json.loads(wf["metadata_json"] or "{}")
@@ -971,6 +993,15 @@ def _build_worker_payload(
         metadata = {}
     task_type = "revision" if request_type == "revision" else "initial_research"
     stage_id = STAGE_REVISION_RUNNING if request_type == "revision" else STAGE_RESEARCH_RUNNING
+    notebook_id = _mapping_value(mapping, "notebook_id")
+    notebook_binding = {
+        "provider": "notebooklm_py",
+        "scope": "slack_channel",
+        "mapping_id": _mapping_value(mapping, "id"),
+        "team_id": _mapping_value(mapping, "team_id"),
+        "channel_id": _mapping_value(mapping, "channel_id"),
+        "notebook_id": notebook_id,
+    }
     payload = {
         "schema_version": 1,
         "worker": "planning_material_research_worker",
@@ -984,6 +1015,8 @@ def _build_worker_payload(
         "research_engine": _research_engine_name(),
         "fallback_engine": _research_fallback_engine_name(),
         "prompt": _research_prompt_metadata(conn),
+        "notebook_id": notebook_id,
+        "notebook_binding": notebook_binding,
         "slack": {
             "team_id": mapping["team_id"],
             "channel_id": mapping["channel_id"],
@@ -1879,6 +1912,12 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
            VALUES (?,?,?,?,?,?,?)""",
         (result_id, request_id or None, workflow_id, "research_report", artifact_id, json.dumps(payload, ensure_ascii=False), now),
     )
+    notebook_id = _payload_notebook_id(payload)
+    if notebook_id and _mapping_table_has_column(conn, "notebook_id"):
+        conn.execute(
+            "UPDATE slack_channel_project_mappings SET notebook_id=?, updated_at=? WHERE id=?",
+            (notebook_id, now, mapping["id"]),
+        )
     _transition_planning_stage(
         conn,
         workflow_id,

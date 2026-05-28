@@ -1085,6 +1085,33 @@ with plugin_api.get_db() as conn:
         four_payload,
     )
 
+    mapping_columns = {row[1] for row in conn.execute("PRAGMA table_info(slack_channel_project_mappings)").fetchall()}
+    check("Schema exposes Slack notebook binding columns", "notebook_id" in mapping_columns or "notebook_binding_json" in mapping_columns, mapping_columns)
+
+    notebook_bound_mapping_a = dict(four_mapping)
+    notebook_bound_mapping_a.update({"channel_id": "CFOURSOURCE_A", "notebook_id": "nb_existing_channel"})
+    notebook_bound_request_a = slack_onboarding_api._create_worker_request(conn, mapping=notebook_bound_mapping_a, request_type="research", source_event_id="EvFOURBINDINGA")
+    notebook_bound_payload_a = json.loads(notebook_bound_request_a["payload_json"])
+    check(
+        "Worker research payload reuses existing notebook binding",
+        notebook_bound_payload_a.get("notebook_id") == "nb_existing_channel"
+        or notebook_bound_payload_a.get("notebook", {}).get("notebook_id") == "nb_existing_channel"
+        or notebook_bound_payload_a.get("notebook_binding", {}).get("notebook_id") == "nb_existing_channel",
+        notebook_bound_payload_a,
+    )
+
+    notebook_bound_mapping_b = dict(four_mapping)
+    notebook_bound_mapping_b.update({"channel_id": "CFOURSOURCE_B", "notebook_id": "nb_other_channel"})
+    notebook_bound_request_b = slack_onboarding_api._create_worker_request(conn, mapping=notebook_bound_mapping_b, request_type="research", source_event_id="EvFOURBINDINGB")
+    notebook_bound_payload_b = json.loads(notebook_bound_request_b["payload_json"])
+    check(
+        "Slack channel notebook bindings stay isolated per channel",
+        notebook_bound_payload_a.get("notebook_id") == "nb_existing_channel"
+        and notebook_bound_payload_b.get("notebook_id") == "nb_other_channel"
+        and notebook_bound_payload_a.get("notebook_id") != notebook_bound_payload_b.get("notebook_id"),
+        {"channel_a": notebook_bound_payload_a, "channel_b": notebook_bound_payload_b},
+    )
+
 research_request_id = research_request["id"] if research_request else "missing-research-request"
 r = client.post(f"/worker/requests/{research_request_id}/run")
 check("Worker request runner status", r.status_code == 200, f"got {r.status_code}: {r.text}")
@@ -1144,6 +1171,7 @@ revision_initial_result_payload = {
     "status": "succeeded",
     "title": "수정테스트 자료조사 결과",
     "content": "## 수정테스트 자료조사 결과\n\n초안입니다.",
+    "metadata": {"notebook_id": "nb_created_initial"},
 }
 r = client.post("/worker/results", json={
     "workflow_id": revision_wf_id,
@@ -1207,6 +1235,23 @@ with plugin_api.get_db() as conn:
     revision_file_request = fetch_worker_request(conn, revision_wf_id, "revision")
     revision_file_payload_json = json.loads(revision_file_request["payload_json"]) if revision_file_request else {}
     check("Revision file worker payload includes attachment", any(f.get("filename") == "revision-notes.md" for f in revision_file_payload_json.get("revision", {}).get("attachments", [])), revision_file_payload_json)
+    revision_mapping_columns = {row[1] for row in conn.execute("PRAGMA table_info(slack_channel_project_mappings)").fetchall()}
+    if revision_file_request and "notebook_id" in revision_mapping_columns:
+        revision_mapping = conn.execute("SELECT * FROM slack_channel_project_mappings WHERE id=?", (revision_file_request["mapping_id"],)).fetchone()
+        check(
+            "Worker result notebook metadata persisted to mapping row",
+            revision_mapping is not None and revision_mapping["notebook_id"] == "nb_created_initial",
+            dict(revision_mapping) if revision_mapping else "",
+        )
+    else:
+        check("Worker result notebook metadata persisted to mapping row", False, revision_mapping_columns)
+    check(
+        "Revision worker payload reuses notebook_id from worker result metadata",
+        revision_file_payload_json.get("notebook_id") == "nb_created_initial"
+        or revision_file_payload_json.get("notebook", {}).get("notebook_id") == "nb_created_initial"
+        or revision_file_payload_json.get("notebook_binding", {}).get("notebook_id") == "nb_created_initial",
+        revision_file_payload_json,
+    )
 revision_file_request_id = revision_file_request["id"] if revision_file_request else "missing-revision-file-request"
 mark_worker_request_running(revision_file_request_id)
 worker_failure_payload = {
@@ -1626,7 +1671,7 @@ migration_conn.execute("INSERT INTO artifacts (id, workflow_id, stage_id, artifa
 migration_conn.execute("PRAGMA user_version = 4")
 db_schema._run_migrations(migration_conn)
 migration_row = migration_conn.execute("SELECT * FROM artifacts WHERE id='art_old'").fetchone()
-check("schema v8 migration sets user_version", migration_conn.execute("PRAGMA user_version").fetchone()[0] >= 8)
+check("schema v9 migration sets user_version", migration_conn.execute("PRAGMA user_version").fetchone()[0] >= 9)
 check("schema v5 backfills storage backend", migration_row["storage_backend"] == "local", dict(migration_row))
 check("schema v5 backfills storage key", migration_row["storage_key"] == "wi_old/stg_old/art_old.md", dict(migration_row))
 check("schema v5 backfills version/latest", migration_row["version"] == 1 and migration_row["is_latest"] == 1, dict(migration_row))
@@ -1641,6 +1686,8 @@ worker_tables = {
     for r in migration_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'planning_worker_%'").fetchall()
 }
 check("schema v8 creates planning worker orchestration tables", {"planning_worker_requests", "planning_worker_results"}.issubset(worker_tables), worker_tables)
+slack_mapping_columns = {row[1] for row in migration_conn.execute("PRAGMA table_info(slack_channel_project_mappings)").fetchall()}
+check("schema v9 adds Slack notebook binding column", "notebook_id" in slack_mapping_columns, slack_mapping_columns)
 migration_conn.close()
 
 legacy_seed_conn = sqlite3.connect(":memory:")

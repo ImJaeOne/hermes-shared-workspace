@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS agent_types (
@@ -171,6 +171,7 @@ CREATE TABLE IF NOT EXISTS slack_channel_project_mappings (
     company_name TEXT NOT NULL,
     project_key TEXT NOT NULL,
     workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+    notebook_id TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
     onboarding_message TEXT NOT NULL DEFAULT '',
     onboarding_message_ts TEXT NOT NULL DEFAULT '',
@@ -506,6 +507,7 @@ def _run_migrations(conn: sqlite3.Connection):
             company_name TEXT NOT NULL,
             project_key TEXT NOT NULL,
             workflow_id TEXT NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+            notebook_id TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'active',
             onboarding_message TEXT NOT NULL DEFAULT '',
             onboarding_message_ts TEXT NOT NULL DEFAULT '',
@@ -635,3 +637,9 @@ def _run_migrations(conn: sqlite3.Connection):
             "ON planning_worker_results(workflow_id, created_at)"
         )
         _set_schema_version(conn, 8)
+        current = 8
+
+    if current < 9:
+        if _table_exists(conn, "slack_channel_project_mappings") and not _column_exists(conn, "slack_channel_project_mappings", "notebook_id"):
+            conn.execute("ALTER TABLE slack_channel_project_mappings ADD COLUMN notebook_id TEXT NOT NULL DEFAULT ''")
+        _set_schema_version(conn, 9)
