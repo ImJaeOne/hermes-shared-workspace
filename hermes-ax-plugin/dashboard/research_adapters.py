@@ -46,6 +46,25 @@ def configured_fallback_engine() -> str:
     )
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _payload_notebook_id(payload: dict[str, Any]) -> str:
+    notebook_id = str(payload.get("notebook_id") or "").strip()
+    if notebook_id:
+        return notebook_id
+    for key in ("notebook_binding", "notebook"):
+        binding = payload.get(key) if isinstance(payload.get(key), dict) else {}
+        notebook_id = str(binding.get("notebook_id") or "").strip()
+        if notebook_id:
+            return notebook_id
+    return ""
+
+
 @dataclass(frozen=True)
 class ResearchAdapterResult:
     """Normalized result returned by any research adapter."""
@@ -344,7 +363,11 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
 
         company = _company_name(payload)
         title = f"AX 자료조사 - {company} - {payload.get('workflow_id') or 'workflow'}"
-        keep_notebooks = os.getenv("HERMES_AX_NOTEBOOKLM_KEEP_NOTEBOOKS", "false").strip().lower() in {"1", "true", "yes", "on"}
+        notebook_binding = payload.get("notebook_binding") if isinstance(payload.get("notebook_binding"), dict) else {}
+        channel_binding_enabled = bool(notebook_binding)
+        keep_notebooks = _env_bool("HERMES_AX_NOTEBOOKLM_KEEP_NOTEBOOKS") or (
+            channel_binding_enabled and _env_bool("HERMES_AX_NOTEBOOKLM_REUSE_CHANNEL_NOTEBOOKS", True)
+        )
         timeout = _configured_notebooklm_timeout()
         context_kwargs: dict[str, Any] = {"timeout": timeout}
         if storage_path:
@@ -352,10 +375,14 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
         if profile:
             context_kwargs["profile"] = profile
 
-        notebook_id = ""
+        notebook_id = _payload_notebook_id(payload)
+        notebook_reused = bool(notebook_id)
+        notebook_created = False
         async with NotebookLMClient.from_storage(**context_kwargs) as client:
-            notebook = await client.notebooks.create(title)
-            notebook_id = str(getattr(notebook, "id", ""))
+            if not notebook_id:
+                notebook = await client.notebooks.create(title)
+                notebook_id = str(getattr(notebook, "id", ""))
+                notebook_created = True
             try:
                 source_upload_metadata = await self._add_sources(client, notebook_id, payload)
                 answer = await client.chat.ask(notebook_id, self._build_question(payload, prompt))
@@ -369,6 +396,9 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                     metadata={
                         "engine": self.engine,
                         "notebook_id": notebook_id,
+                        "notebook_reused": notebook_reused,
+                        "notebook_created": notebook_created,
+                        "notebook_keep_policy": "keep" if keep_notebooks else "delete_after_run",
                         "source_file_count": len(payload.get("source_files") or []),
                         "source_upload_attempted_count": source_upload_metadata.get("attempted_count", 0),
                         "source_upload_succeeded_count": source_upload_metadata.get("succeeded_count", 0),
@@ -379,7 +409,7 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                     },
                 )
             finally:
-                if notebook_id and not keep_notebooks:
+                if notebook_created and notebook_id and not keep_notebooks:
                     try:
                         await client.notebooks.delete(notebook_id)
                     except Exception:
