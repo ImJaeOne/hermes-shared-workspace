@@ -9,6 +9,7 @@ mock adapter while deployed environments may opt into the unofficial
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import tempfile
@@ -147,6 +148,36 @@ def _resolve_local_artifact_path(artifact: dict[str, Any]) -> str:
         if resolved.exists() and resolved.is_file():
             return str(resolved)
     return ""
+
+
+def _configured_notebooklm_timeout() -> float:
+    raw_timeout = str(os.getenv("HERMES_AX_NOTEBOOKLM_TIMEOUT", "60") or "60").strip()
+    try:
+        timeout = float(raw_timeout)
+    except ValueError:
+        return 60.0
+    return timeout if timeout > 0 else 60.0
+
+
+def _source_wait_timeout_kwargs(method: Any, timeout: float) -> dict[str, float]:
+    """Return the source-ready timeout kwarg supported by notebooklm-py, if exposed.
+
+    notebooklm-py versions have changed source wait signatures over time. Prefer an
+    explicit signature match, while still supporting ``**kwargs`` wrappers by sending
+    the public ``wait_timeout`` name used by notebooklm-py source APIs.
+    """
+    timeout_kwarg_names = ("wait_timeout", "source_timeout", "ready_timeout", "timeout")
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return {"wait_timeout": timeout}
+
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return {"wait_timeout": timeout}
+    for name in timeout_kwarg_names:
+        if name in parameters:
+            return {name: timeout}
+    return {}
 
 
 def _text_preview(value: str, *, limit: int = 160) -> str:
@@ -314,7 +345,7 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
         company = _company_name(payload)
         title = f"AX 자료조사 - {company} - {payload.get('workflow_id') or 'workflow'}"
         keep_notebooks = os.getenv("HERMES_AX_NOTEBOOKLM_KEEP_NOTEBOOKS", "false").strip().lower() in {"1", "true", "yes", "on"}
-        timeout = float(os.getenv("HERMES_AX_NOTEBOOKLM_TIMEOUT", "60"))
+        timeout = _configured_notebooklm_timeout()
         context_kwargs: dict[str, Any] = {"timeout": timeout}
         if storage_path:
             context_kwargs["path"] = storage_path
@@ -357,10 +388,14 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
     async def _add_sources(self, client: Any, notebook_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         sources = payload.get("source_files") if isinstance(payload.get("source_files"), list) else []
         upload_sources: list[dict[str, Any]] = []
+        source_wait_timeout = _configured_notebooklm_timeout()
         if not sources:
-            await client.sources.add_text(notebook_id, "AX 자료조사 입력", json.dumps(payload, ensure_ascii=False), wait=True)
-            return {"attempted_count": 0, "succeeded_count": 0, "skipped_count": 0, "sources": upload_sources}
+            text_timeout_kwargs = _source_wait_timeout_kwargs(client.sources.add_text, source_wait_timeout)
+            await client.sources.add_text(notebook_id, "AX 자료조사 입력", json.dumps(payload, ensure_ascii=False), wait=True, **text_timeout_kwargs)
+            return {"attempted_count": 0, "succeeded_count": 0, "skipped_count": 0, "failed_count": 0, "sources": upload_sources}
 
+        file_timeout_kwargs = _source_wait_timeout_kwargs(client.sources.add_file, source_wait_timeout)
+        text_timeout_kwargs = _source_wait_timeout_kwargs(client.sources.add_text, source_wait_timeout)
         for index, source in enumerate(sources):
             if not isinstance(source, dict):
                 upload_sources.append(
@@ -382,10 +417,11 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                 "original_filename": str(source.get("original_filename") or artifact.get("original_filename") or "").strip(),
                 "artifact_id": str(source.get("artifact_id") or artifact.get("id") or "").strip(),
                 "mime_type": mime_type or "",
+                "wait_timeout_seconds": source_wait_timeout,
             }
             if file_path:
                 try:
-                    await client.sources.add_file(notebook_id, file_path, mime_type=mime_type, title=title, wait=True)
+                    await client.sources.add_file(notebook_id, file_path, mime_type=mime_type, title=title, wait=True, **file_timeout_kwargs)
                 except Exception as exc:
                     upload_sources.append(
                         {
@@ -405,7 +441,7 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
             if not content:
                 content = json.dumps({k: v for k, v in source.items() if k != "artifact"}, ensure_ascii=False, indent=2)
             try:
-                await client.sources.add_text(notebook_id, title, content, wait=True)
+                await client.sources.add_text(notebook_id, title, content, wait=True, **text_timeout_kwargs)
             except Exception as exc:
                 upload_sources.append(
                     {

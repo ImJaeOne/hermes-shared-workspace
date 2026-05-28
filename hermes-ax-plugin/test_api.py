@@ -119,6 +119,21 @@ if research_adapters:
         async def add_text(self, notebook_id, title, content, **kwargs):
             self.texts.append({"notebook_id": notebook_id, "title": title, "content": content, **kwargs})
 
+    class FakeTimeoutAwareNotebookSources:
+        def __init__(self):
+            self.files = []
+            self.texts = []
+
+        async def add_file(self, notebook_id, file_path, *, mime_type=None, title=None, wait=True, wait_timeout=None):
+            if wait_timeout is None:
+                raise TimeoutError("Source failed because wait_timeout was not forwarded")
+            self.files.append({"notebook_id": notebook_id, "file_path": file_path, "mime_type": mime_type, "title": title, "wait": wait, "wait_timeout": wait_timeout})
+
+        async def add_text(self, notebook_id, title, content, *, wait=True, wait_timeout=None):
+            if wait_timeout is None:
+                raise TimeoutError("Text source failed because wait_timeout was not forwarded")
+            self.texts.append({"notebook_id": notebook_id, "title": title, "content": content, "wait": wait, "wait_timeout": wait_timeout})
+
     class FakeNotebookClient:
         def __init__(self):
             self.sources = FakeNotebookSources()
@@ -247,6 +262,32 @@ if research_adapters:
         and failed_upload.get("exception_type") == "TimeoutError"
         and "not ready" in failed_upload.get("message", ""),
         failed_upload,
+    )
+
+    old_timeout = os.environ.get("HERMES_AX_NOTEBOOKLM_TIMEOUT")
+    os.environ["HERMES_AX_NOTEBOOKLM_TIMEOUT"] = "300"
+    try:
+        timeout_aware_client = FakeNotebookClient()
+        timeout_aware_client.sources = FakeTimeoutAwareNotebookSources()
+        timeout_aware_metadata = asyncio.run(
+            research_adapters.NotebookLmPyResearchAdapter()._add_sources(
+                timeout_aware_client,
+                "notebook-timeout-aware-sources",
+                {"source_files": four_source_files[:1]},
+            )
+        )
+    finally:
+        if old_timeout is None:
+            os.environ.pop("HERMES_AX_NOTEBOOKLM_TIMEOUT", None)
+        else:
+            os.environ["HERMES_AX_NOTEBOOKLM_TIMEOUT"] = old_timeout
+    check(
+        "NotebookLM adapter forwards configured timeout to source ready wait",
+        len(timeout_aware_client.sources.files) == 1
+        and timeout_aware_client.sources.files[0].get("wait_timeout") == 300.0
+        and timeout_aware_metadata.get("succeeded_count") == 1
+        and timeout_aware_metadata.get("sources", [{}])[0].get("wait_timeout_seconds") == 300.0,
+        {"files": timeout_aware_client.sources.files, "metadata": timeout_aware_metadata},
     )
 
 
