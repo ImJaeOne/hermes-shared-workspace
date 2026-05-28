@@ -23,6 +23,7 @@ os.environ["HERMES_AX_BOOTSTRAP_ADMIN_DISPLAY_NAME"] = "테스트 관리자"
 os.environ["HERMES_AX_SLACK_SIGNING_SECRET"] = "test-slack-signing-secret"
 os.environ["HERMES_AX_SLACK_BOT_USER_ID"] = "UBOTLEAD"
 os.environ["HERMES_AX_SLACK_DRY_RUN"] = "true"
+os.environ["HERMES_AX_WORKER_AUTO_RUNNER_DISABLED"] = "true"
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -771,11 +772,68 @@ with plugin_api.get_db() as conn:
 
 confirm_payload = slack_message_text_payload("EvCONFIRM1", "네, 없습니다. 자료조사 worker에게 전달해주세요.")
 confirm_body, confirm_headers = slack_headers(confirm_payload)
-r = anon.post("/slack/events", content=confirm_body, headers=confirm_headers)
+question_message_ts = ""
+with plugin_api.get_db() as conn:
+    question_state = conn.execute("SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (slack_wf_id,)).fetchone()
+    question_message_ts = question_state["last_message_ts"] if question_state else ""
+
+saved_confirm_dry_run = os.environ.get("HERMES_AX_SLACK_DRY_RUN")
+saved_confirm_ax_bot_token = os.environ.get("HERMES_AX_SLACK_BOT_TOKEN")
+saved_confirm_slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
+orig_confirm_urlopen = slack_onboarding_api.urllib.request.urlopen
+orig_confirm_runner_kick = getattr(slack_onboarding_api, "_kick_worker_runner", None)
+confirm_slack_calls = []
+worker_runner_kicks = []
+try:
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = "false"
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = "test-bot-token"
+    os.environ.pop("SLACK_BOT_TOKEN", None)
+
+    def fake_confirm_status_post(req, timeout=None):
+        url = request_url(req)
+        payload = request_json(req)
+        if url.endswith("/chat.update"):
+            confirm_slack_calls.append({"method": "chat.update", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": payload.get("ts")})
+        if url.endswith("/chat.postMessage"):
+            confirm_slack_calls.append({"method": "chat.postMessage", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": "1710000400.000100"})
+        raise AssertionError(f"unexpected Slack API call: {url}")
+
+    def fake_worker_runner_kick(request_id):
+        worker_runner_kicks.append(request_id)
+        return {"scheduled": True, "request_id": request_id, "mode": "fake"}
+
+    slack_onboarding_api.urllib.request.urlopen = fake_confirm_status_post
+    slack_onboarding_api._kick_worker_runner = fake_worker_runner_kick
+    r = anon.post("/slack/events", content=confirm_body, headers=confirm_headers)
+finally:
+    slack_onboarding_api.urllib.request.urlopen = orig_confirm_urlopen
+    if orig_confirm_runner_kick is None:
+        try:
+            delattr(slack_onboarding_api, "_kick_worker_runner")
+        except AttributeError:
+            pass
+    else:
+        slack_onboarding_api._kick_worker_runner = orig_confirm_runner_kick
+    if saved_confirm_dry_run is None:
+        os.environ.pop("HERMES_AX_SLACK_DRY_RUN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_DRY_RUN"] = saved_confirm_dry_run
+    if saved_confirm_ax_bot_token is None:
+        os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_confirm_ax_bot_token
+    if saved_confirm_slack_bot_token is None:
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["SLACK_BOT_TOKEN"] = saved_confirm_slack_bot_token
 check("Slack material confirmation reply status", r.status_code == 200, f"got {r.status_code}: {r.text}")
 confirm_result = r.json()
 check("Slack material confirmation reply stored", confirm_result.get("material_status") == "confirmed", str(confirm_result))
 check("Slack material confirmation starts worker", "자료조사 worker" in confirm_result.get("message", "") and confirm_result.get("current_stage_id") == "p_research_running", str(confirm_result))
+check("Slack material confirmation posts new worker status message", [c["method"] for c in confirm_slack_calls] == ["chat.postMessage"], confirm_slack_calls)
+check("Slack material confirmation does not edit material question message", all(c["payload"].get("ts") != question_message_ts for c in confirm_slack_calls if c["method"] == "chat.update"), {"question_message_ts": question_message_ts, "calls": confirm_slack_calls})
 with plugin_api.get_db() as conn:
     confirmed_state = conn.execute("SELECT * FROM slack_material_collection_states WHERE workflow_id=?", (slack_wf_id,)).fetchone()
     wf_research = conn.execute("SELECT * FROM workflow_instances WHERE id=?", (slack_wf_id,)).fetchone()
@@ -791,6 +849,7 @@ with plugin_api.get_db() as conn:
     else:
         research_payload = {}
     check("Slack material confirmation creates worker request", research_request is not None and research_request["status"] == "queued", dict(research_request) if research_request else "")
+    check("Slack material confirmation kicks queued worker runner", worker_runner_kicks == ([research_request["id"]] if research_request else []), {"request": dict(research_request) if research_request else None, "kicks": worker_runner_kicks})
     check("Worker research payload is standardized", research_payload.get("schema_version") == 1 and research_payload.get("task_type") == "initial_research" and research_payload.get("workflow_id") == slack_wf_id and research_payload.get("stage_id") == "p_research_running", research_payload)
     check("Worker research payload includes Slack and source files", research_payload.get("slack", {}).get("channel_id") == "CLOCALTEST" and len(research_payload.get("source_files", [])) == 2, research_payload)
     check("Worker research payload includes prompt and engine metadata", research_payload.get("research_engine") == "mock" and research_payload.get("prompt", {}).get("source") == "skills" and research_payload.get("prompt", {}).get("skill_id"), research_payload)

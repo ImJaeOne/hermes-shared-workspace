@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -551,6 +552,51 @@ def _send_progress_message(conn: sqlite3.Connection, mapping: sqlite3.Row, messa
             post_result["fallback_from_update"] = True
         return post_result
     return _post_slack_message(mapping["channel_id"], message)
+
+
+def _run_worker_request_background(request_id: str) -> None:
+    """Run one queued worker request outside the Slack event response path."""
+    # Slack event DB writes commit after the request handler exits. The
+    # background runner may briefly race that commit or SQLite locks, so retry a
+    # few times before leaving the request queued for the manual runner.
+    try:
+        try:
+            from .research_worker import run_worker_request
+        except ImportError:
+            from research_worker import run_worker_request
+        for attempt in range(10):
+            time.sleep(0.1 if attempt == 0 else min(0.25 * attempt, 1.0))
+            try:
+                with get_db() as conn:
+                    run_worker_request(conn, request_id)
+                return
+            except HTTPException as exc:
+                # Another runner already claimed/completed it; the DB claim is
+                # the source of truth and duplicate execution is prevented.
+                if exc.status_code == 409:
+                    return
+                if exc.status_code != 404 or attempt == 9:
+                    return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or attempt == 9:
+                    return
+    except Exception:
+        # Keep Slack event handling best-effort: failures are reflected by the
+        # worker request remaining queued/running/failed and can be retried by
+        # the manual /worker/run-queued endpoint.
+        return
+
+
+def _kick_worker_runner(request_id: str) -> dict[str, Any]:
+    """Schedule a non-blocking run for the just-created queued worker request."""
+    request_id = str(request_id or "").strip()
+    if not request_id:
+        return {"scheduled": False, "reason": "request_id_required"}
+    if _env_bool("HERMES_AX_WORKER_AUTO_RUNNER_DISABLED"):
+        return {"scheduled": False, "request_id": request_id, "reason": "auto_runner_disabled"}
+    thread = threading.Thread(target=_run_worker_request_background, args=(request_id,), daemon=True)
+    thread.start()
+    return {"scheduled": True, "request_id": request_id, "mode": "background_thread"}
 
 
 def _post_onboarding_message(channel_id: str, message: str) -> dict[str, Any]:
@@ -1323,6 +1369,7 @@ def _handle_material_text_event(
     if not intent:
         return {"ok": True, "ignored": True, "reason": "message_without_files", "event_type": "message"}
 
+    runner_kick_result: dict[str, Any] = {}
     if intent == "more_needed":
         message = _material_more_needed_message()
         material_status = "awaiting_more_materials"
@@ -1350,8 +1397,9 @@ def _handle_material_text_event(
         )
         message = _material_confirmed_message()
         material_status = "confirmed"
-        send_result = _send_progress_message(conn, mapping, message)
+        send_result = _post_slack_message(mapping["channel_id"], message)
         _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status=material_status)
+        runner_kick_result = _kick_worker_runner(worker_request["id"])
         _record_slack_activity(
             conn,
             action="slack.material_collection_confirmed",
@@ -1373,6 +1421,9 @@ def _handle_material_text_event(
         "message_sent": bool(send_result.get("sent")),
         "message_ts": send_result.get("ts") or "",
     }
+    if runner_kick_result:
+        response["worker_runner_scheduled"] = bool(runner_kick_result.get("scheduled"))
+        response["worker_runner_mode"] = runner_kick_result.get("mode", "")
     if not send_result.get("sent"):
         response["reason"] = send_result.get("reason") or "send_failed"
     return response
