@@ -1727,6 +1727,65 @@
   min-height: 100%;
 }
 
+.ax-notebooklm-auth-card {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 0.5rem);
+  background: color-mix(in srgb, var(--color-card) 88%, transparent);
+  padding: 12px 14px;
+}
+
+.ax-notebooklm-auth-card h3 {
+  margin: 2px 0 4px;
+  font-size: 0.95rem;
+}
+
+.ax-notebooklm-auth-card p {
+  margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.ax-notebooklm-auth-card-ready {
+  border-color: color-mix(in srgb, var(--color-success, #4ade80) 42%, var(--color-border));
+}
+
+.ax-notebooklm-auth-card-warning {
+  border-color: color-mix(in srgb, var(--color-warning, #ffbd38) 48%, var(--color-border));
+}
+
+.ax-notebooklm-auth-card-missing {
+  border-color: color-mix(in srgb, var(--color-destructive, #fb2c36) 36%, var(--color-border));
+}
+
+.ax-notebooklm-auth-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.ax-notebooklm-auth-meta span {
+  border: 1px solid var(--color-border);
+  border-radius: 9999px;
+  padding: 3px 8px;
+  color: var(--midground);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.ax-notebooklm-auth-meta small {
+  color: var(--color-muted-foreground);
+  font-size: 0.65rem;
+}
+
 .ax-planning-projects-panel,
 .ax-planning-detail-panel {
   min-width: 0;
@@ -2174,6 +2233,7 @@
   }
 
   .ax-planning-next-preview,
+  .ax-notebooklm-auth-card,
   .ax-planning-panel-header,
   .ax-planning-detail-header {
     flex-direction: column;

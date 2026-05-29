@@ -123,6 +123,131 @@ if research_adapters:
         )
         check("NotebookLM adapter falls back to mock without auth", fallback_result.engine == "mock" and fallback_result.metadata.get("fallback_from") == "notebooklm_py", fallback_result)
         check("NotebookLM fallback keeps user-safe diagnostics", "NotebookLM" not in fallback_result.metadata.get("safe_message", "") and "쿠키" not in fallback_result.metadata.get("safe_message", ""), fallback_result.metadata)
+
+        status_missing = client.get("/worker/notebooklm/auth-status")
+        status_missing_body = status_missing.json()
+        check(
+            "NotebookLM auth status reports missing auth without exposing secrets",
+            status_missing.status_code == 200
+            and status_missing_body.get("configured") is False
+            and status_missing_body.get("can_run") is False
+            and status_missing_body.get("code") == "notebooklm_auth_not_configured"
+            and "secret-storage-state" not in json.dumps(status_missing_body, ensure_ascii=False),
+            status_missing_body,
+        )
+
+        os.environ["HERMES_AX_NOTEBOOKLM_AUTH_JSON"] = '{"cookies": [{"name": "SID", "value": "secret-storage-state"}]}'
+        status_json = client.get("/worker/notebooklm/auth-status")
+        status_json_body = status_json.json()
+        check(
+            "NotebookLM auth status validates AUTH_JSON metadata only",
+            status_json.status_code == 200
+            and status_json_body.get("configured") is True
+            and status_json_body.get("can_run") is True
+            and status_json_body.get("source") == "auth_json"
+            and status_json_body.get("auth_json", {}).get("present") is True
+            and status_json_body.get("auth_json", {}).get("valid_json") is True
+            and status_json_body.get("auth_json", {}).get("length", 0) > 0
+            and "secret-storage-state" not in json.dumps(status_json_body, ensure_ascii=False),
+            status_json_body,
+        )
+
+        os.environ["HERMES_AX_NOTEBOOKLM_AUTH_JSON"] = "not-json-secret-storage-state"
+        status_invalid_json = client.get("/worker/notebooklm/auth-status")
+        status_invalid_json_body = status_invalid_json.json()
+        check(
+            "NotebookLM auth status separates invalid AUTH_JSON",
+            status_invalid_json.status_code == 200
+            and status_invalid_json_body.get("configured") is True
+            and status_invalid_json_body.get("can_run") is False
+            and status_invalid_json_body.get("code") == "notebooklm_auth_json_invalid"
+            and status_invalid_json_body.get("auth_json", {}).get("valid_json") is False
+            and "not-json-secret-storage-state" not in json.dumps(status_invalid_json_body, ensure_ascii=False),
+            status_invalid_json_body,
+        )
+
+        os.environ["HERMES_AX_NOTEBOOKLM_AUTH_JSON"] = "123"
+        status_scalar_json = client.get("/worker/notebooklm/auth-status")
+        status_scalar_json_body = status_scalar_json.json()
+        check(
+            "NotebookLM auth status rejects scalar AUTH_JSON",
+            status_scalar_json.status_code == 200
+            and status_scalar_json_body.get("configured") is True
+            and status_scalar_json_body.get("can_run") is False
+            and status_scalar_json_body.get("code") == "notebooklm_auth_json_invalid"
+            and status_scalar_json_body.get("auth_json", {}).get("valid_json") is True
+            and status_scalar_json_body.get("auth_json", {}).get("storage_state_shape_valid") is False,
+            status_scalar_json_body,
+        )
+
+        auth_json_path = os.path.join(_tmp, "notebooklm-auth-json-path.json")
+        with open(auth_json_path, "w", encoding="utf-8") as fh:
+            json.dump({"cookies": [{"name": "SID", "value": "json-path-secret-storage-state"}]}, fh)
+        os.environ["HERMES_AX_NOTEBOOKLM_AUTH_JSON"] = auth_json_path
+        status_json_path = client.get("/worker/notebooklm/auth-status")
+        status_json_path_body = status_json_path.json()
+        check(
+            "NotebookLM auth status supports AUTH_JSON file path runtime behavior",
+            status_json_path.status_code == 200
+            and status_json_path_body.get("configured") is True
+            and status_json_path_body.get("can_run") is True
+            and status_json_path_body.get("source") == "auth_json_path"
+            and status_json_path_body.get("code") == "notebooklm_auth_ready"
+            and status_json_path_body.get("auth_json", {}).get("path", {}).get("exists") is True
+            and status_json_path_body.get("auth_json", {}).get("path", {}).get("valid_json") is True
+            and auth_json_path not in json.dumps(status_json_path_body, ensure_ascii=False)
+            and "json-path-secret-storage-state" not in json.dumps(status_json_path_body, ensure_ascii=False),
+            status_json_path_body,
+        )
+
+        missing_auth_path = os.path.join(_tmp, "missing-notebooklm-auth.json")
+        os.environ["HERMES_AX_NOTEBOOKLM_AUTH_JSON"] = '{"cookies": []}'
+        os.environ["HERMES_AX_NOTEBOOKLM_AUTH_PATH"] = missing_auth_path
+        status_path_precedence = client.get("/worker/notebooklm/auth-status")
+        status_path_precedence_body = status_path_precedence.json()
+        check(
+            "NotebookLM auth status honors AUTH_PATH precedence over AUTH_JSON",
+            status_path_precedence.status_code == 200
+            and status_path_precedence_body.get("configured") is True
+            and status_path_precedence_body.get("can_run") is False
+            and status_path_precedence_body.get("source") == "auth_path"
+            and status_path_precedence_body.get("code") == "notebooklm_auth_path_missing"
+            and status_path_precedence_body.get("auth_path", {}).get("exists") is False,
+            status_path_precedence_body,
+        )
+
+        valid_auth_path = os.path.join(_tmp, "notebooklm-auth.json")
+        with open(valid_auth_path, "w", encoding="utf-8") as fh:
+            json.dump({"cookies": [{"name": "SID", "value": "path-secret-storage-state"}]}, fh)
+        os.environ["HERMES_AX_NOTEBOOKLM_AUTH_PATH"] = valid_auth_path
+        status_path = client.get("/worker/notebooklm/auth-status")
+        status_path_body = status_path.json()
+        check(
+            "NotebookLM auth status validates AUTH_PATH file metadata only",
+            status_path.status_code == 200
+            and status_path_body.get("configured") is True
+            and status_path_body.get("can_run") is True
+            and status_path_body.get("source") == "auth_path"
+            and status_path_body.get("auth_path", {}).get("exists") is True
+            and status_path_body.get("auth_path", {}).get("valid_json") is True
+            and "path-secret-storage-state" not in json.dumps(status_path_body, ensure_ascii=False),
+            status_path_body,
+        )
+
+        os.environ.pop("HERMES_AX_NOTEBOOKLM_AUTH_JSON", None)
+        os.environ.pop("HERMES_AX_NOTEBOOKLM_AUTH_PATH", None)
+        os.environ["HERMES_AX_NOTEBOOKLM_PROFILE"] = "company-shared"
+        status_profile = client.get("/worker/notebooklm/auth-status")
+        status_profile_body = status_profile.json()
+        check(
+            "NotebookLM auth status accepts profile-only configuration",
+            status_profile.status_code == 200
+            and status_profile_body.get("configured") is True
+            and status_profile_body.get("can_run") is True
+            and status_profile_body.get("source") == "profile"
+            and status_profile_body.get("profile", {}).get("present") is True,
+            status_profile_body,
+        )
     finally:
         for key, value in {
             "HERMES_AX_RESEARCH_ENGINE": old_engine,

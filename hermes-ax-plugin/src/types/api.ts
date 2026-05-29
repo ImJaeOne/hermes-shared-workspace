@@ -76,6 +76,47 @@ export interface StatsResponse {
   by_agent: Record<string, { active: number; completed: number; failed: number }>;
 }
 
+// --- NotebookLM Auth Status ---
+export interface NotebookLmAuthStatusResponse {
+  configured: boolean;
+  can_run: boolean;
+  source: "auth_path" | "auth_json" | "auth_json_path" | "profile" | "missing" | string;
+  code: string;
+  precedence: string[];
+  auth_path: {
+    present: boolean;
+    exists: boolean;
+    is_file: boolean;
+    valid_json: boolean;
+    length?: number;
+    json_type?: string;
+    error?: string;
+    exception_type?: string;
+  };
+  auth_json: {
+    present: boolean;
+    length: number;
+    valid_json: boolean;
+    json_type?: string;
+    error?: string;
+    exception_type?: string;
+    path: {
+      present: boolean;
+      exists: boolean;
+      is_file: boolean;
+      valid_json: boolean;
+      length?: number;
+      json_type?: string;
+      error?: string;
+      exception_type?: string;
+    };
+  };
+  profile: {
+    present: boolean;
+    name_length: number;
+  };
+}
+
 // --- Workflow ---
 export interface CreateWorkflowRequest {
   template_id: string;

@@ -7,13 +7,22 @@ from fastapi import APIRouter, Query, Request
 try:
     from .auth_sessions import _require_authenticated_user
     from .db import get_db
+    from .research_adapters import notebooklm_auth_status
     from .research_worker import run_queued_worker_requests, run_worker_request
 except ImportError:
     from auth_sessions import _require_authenticated_user
     from db import get_db
+    from research_adapters import notebooklm_auth_status
     from research_worker import run_queued_worker_requests, run_worker_request
 
 router = APIRouter()
+
+
+@router.get("/worker/notebooklm/auth-status")
+def get_notebooklm_auth_status_endpoint(request: Request):
+    with get_db() as conn:
+        _require_authenticated_user(conn, request)
+    return notebooklm_auth_status()
 
 
 @router.post("/worker/requests/{request_id}/run")

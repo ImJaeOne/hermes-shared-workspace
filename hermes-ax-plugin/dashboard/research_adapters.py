@@ -178,6 +178,135 @@ def _configured_notebooklm_timeout() -> float:
     return timeout if timeout > 0 else 60.0
 
 
+def _safe_json_metadata(raw_value: str) -> dict[str, Any]:
+    """Return JSON metadata without echoing the raw secret-bearing value."""
+    metadata: dict[str, Any] = {
+        "present": bool(raw_value),
+        "length": len(raw_value),
+        "valid_json": False,
+        "storage_state_shape_valid": False,
+    }
+    if not raw_value:
+        return metadata
+    try:
+        parsed = json.loads(raw_value)
+    except Exception as exc:
+        metadata.update({"error": "invalid_json", "exception_type": type(exc).__name__})
+        return metadata
+    metadata.update(
+        {
+            "valid_json": True,
+            "json_type": type(parsed).__name__,
+            "storage_state_shape_valid": isinstance(parsed, (dict, list)),
+        }
+    )
+    return metadata
+
+
+def _safe_json_file_metadata(path_value: str) -> dict[str, Any]:
+    """Return file/path metadata for NotebookLM auth without reading secrets into output."""
+    metadata: dict[str, Any] = {
+        "present": bool(path_value),
+        "exists": False,
+        "is_file": False,
+        "valid_json": False,
+        "storage_state_shape_valid": False,
+    }
+    if not path_value:
+        return metadata
+    path = Path(path_value).expanduser()
+    try:
+        metadata["exists"] = path.exists()
+        metadata["is_file"] = path.is_file()
+    except OSError as exc:
+        metadata.update({"error": "path_check_failed", "exception_type": type(exc).__name__})
+        return metadata
+    if not metadata["exists"]:
+        metadata["error"] = "missing"
+        return metadata
+    if not metadata["is_file"]:
+        metadata["error"] = "not_file"
+        return metadata
+    try:
+        raw_value = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        try:
+            raw_value = path.read_text(errors="ignore")
+        except OSError as exc:
+            metadata.update({"error": "read_failed", "exception_type": type(exc).__name__})
+            return metadata
+    except OSError as exc:
+        metadata.update({"error": "read_failed", "exception_type": type(exc).__name__})
+        return metadata
+    metadata["length"] = len(raw_value)
+    json_metadata = _safe_json_metadata(raw_value)
+    metadata.update(
+        {
+            "valid_json": json_metadata.get("valid_json", False),
+            "json_type": json_metadata.get("json_type", ""),
+            "storage_state_shape_valid": json_metadata.get("storage_state_shape_valid", False),
+        }
+    )
+    if not metadata["valid_json"]:
+        metadata["error"] = "invalid_json"
+    return metadata
+
+
+def notebooklm_auth_status() -> dict[str, Any]:
+    """Diagnose NotebookLM auth configuration without exposing secret values."""
+    auth_path = (os.getenv("HERMES_AX_NOTEBOOKLM_AUTH_PATH") or "").strip()
+    auth_json = (os.getenv("HERMES_AX_NOTEBOOKLM_AUTH_JSON") or "").strip()
+    profile = os.getenv("HERMES_AX_NOTEBOOKLM_PROFILE") or ""
+    profile = profile.strip()
+
+    status: dict[str, Any] = {
+        "configured": False,
+        "can_run": False,
+        "source": "missing",
+        "code": "notebooklm_auth_not_configured",
+        "auth_path": _safe_json_file_metadata(auth_path),
+        "auth_json": {**_safe_json_metadata(auth_json), "path": _safe_json_file_metadata(auth_json)},
+        "profile": {"present": bool(profile), "name_length": len(profile)},
+        "precedence": ["HERMES_AX_NOTEBOOKLM_AUTH_PATH", "HERMES_AX_NOTEBOOKLM_AUTH_JSON", "HERMES_AX_NOTEBOOKLM_PROFILE"],
+    }
+
+    if auth_path:
+        path_status = status["auth_path"]
+        status.update({"configured": True, "source": "auth_path"})
+        if not path_status.get("exists"):
+            status.update({"can_run": False, "code": "notebooklm_auth_path_missing"})
+        elif not path_status.get("is_file"):
+            status.update({"can_run": False, "code": "notebooklm_auth_path_not_file"})
+        elif not path_status.get("valid_json") or not path_status.get("storage_state_shape_valid"):
+            status.update({"can_run": False, "code": "notebooklm_auth_path_invalid_json"})
+        else:
+            status.update({"can_run": True, "code": "notebooklm_auth_ready"})
+        return status
+
+    if auth_json:
+        json_status = status["auth_json"]
+        json_path_status = json_status.get("path") if isinstance(json_status.get("path"), dict) else {}
+        status.update({"configured": True, "source": "auth_json"})
+        if json_status.get("valid_json") and json_status.get("storage_state_shape_valid"):
+            status.update({"can_run": True, "code": "notebooklm_auth_ready"})
+        elif (
+            json_path_status.get("exists")
+            and json_path_status.get("is_file")
+            and json_path_status.get("valid_json")
+            and json_path_status.get("storage_state_shape_valid")
+        ):
+            status.update({"can_run": True, "source": "auth_json_path", "code": "notebooklm_auth_ready"})
+        else:
+            status.update({"can_run": False, "code": "notebooklm_auth_json_invalid"})
+        return status
+
+    if profile:
+        status.update({"configured": True, "can_run": True, "source": "profile", "code": "notebooklm_auth_profile_configured"})
+        return status
+
+    return status
+
+
 def _source_wait_timeout_kwargs(method: Any, timeout: float) -> dict[str, float]:
     """Return the source-ready timeout kwarg supported by notebooklm-py, if exposed.
 
@@ -721,5 +850,6 @@ __all__ = [
     "configured_fallback_engine",
     "configured_research_engine",
     "normalize_engine_name",
+    "notebooklm_auth_status",
     "run_research_adapter",
 ]
