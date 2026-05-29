@@ -62,6 +62,7 @@ hermes-ax-plugin/
 │   ├── seed.py                     # 기본 workflow/template/skill seed
 │   ├── schemas.py, rows.py         # API schema/row serializer
 │   ├── auth*.py                    # parent Dashboard token/legacy session 호환
+│   ├── bootstrap.py                # 레거시 부트스트랩 관리자 upsert 호환
 │   ├── workflows_api.py            # workflow instance/stage 전환 API
 │   ├── artifacts_api.py            # 산출물 CRUD API
 │   ├── artifact_storage.py         # 산출물 메타데이터/본문 저장
