@@ -561,6 +561,101 @@ def _send_worker_result_message(conn: sqlite3.Connection, mapping: sqlite3.Row, 
     return _send_progress_message(conn, mapping, message)
 
 
+def _safe_slack_result_filename(company_name: str, title: str) -> str:
+    base = f"{company_name or title or '자료조사'}_자료조사_결과"
+    base = re.sub(r"[\\/:*?\"<>|\r\n\t]+", "_", base).strip(" ._")
+    base = re.sub(r"\s+", "_", base)
+    if not base:
+        base = "자료조사_결과"
+    return f"{base[:80]}.md"
+
+
+def _upload_slack_file_bytes(upload_url: str, content: bytes) -> dict[str, Any]:
+    if not upload_url:
+        return {"ok": False, "reason": "missing_upload_url"}
+    req = urllib.request.Request(
+        upload_url,
+        data=content,
+        headers={"Content-Type": "text/markdown; charset=utf-8"},
+        method="POST",
+    )
+    timeout = float(os.getenv("HERMES_AX_SLACK_API_TIMEOUT_SECONDS", "2"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            response.read()
+    except (urllib.error.URLError, TimeoutError) as exc:
+        return {"ok": False, "reason": "slack_file_bytes_upload_failed", "error": str(exc)}
+    return {"ok": True}
+
+
+def _upload_slack_result_document(
+    mapping: sqlite3.Row,
+    *,
+    company_name: str,
+    title: str,
+    content: str,
+    request_type: str,
+) -> dict[str, Any]:
+    """Upload the generated research result as a user-openable Markdown file."""
+    filename = _safe_slack_result_filename(company_name, title)
+    channel_id = str(mapping["channel_id"] or "").strip()
+    if not channel_id:
+        return {"sent": False, "reason": "missing_channel_id", "filename": filename}
+    if _env_bool("HERMES_AX_SLACK_DRY_RUN"):
+        return {"sent": True, "dry_run": True, "filename": filename, "method": "files.externalUpload"}
+
+    content_bytes = content.encode("utf-8")
+    initial_comment = "자료조사 결과 문서를 생성했습니다. 첨부된 파일을 검토하신 뒤 수정 요청 또는 확정 여부를 알려주세요."
+    upload_url_result = _call_slack_api(
+        "files.getUploadURLExternal",
+        {"filename": filename, "length": len(content_bytes), "alt_text": title or filename.removesuffix(".md")},
+    )
+    if not upload_url_result.get("ok"):
+        return {
+            "sent": False,
+            "reason": upload_url_result.get("reason") or "slack_file_upload_url_failed",
+            "error": upload_url_result.get("error") or "",
+            "filename": filename,
+            "method": "files.getUploadURLExternal",
+        }
+    upload_data = upload_url_result.get("data") or {}
+    upload_url = str(upload_data.get("upload_url") or "").strip()
+    file_id = str(upload_data.get("file_id") or "").strip()
+    upload_bytes_result = _upload_slack_file_bytes(upload_url, content_bytes)
+    if not upload_bytes_result.get("ok"):
+        return {
+            "sent": False,
+            "reason": upload_bytes_result.get("reason") or "slack_file_bytes_upload_failed",
+            "error": upload_bytes_result.get("error") or "",
+            "filename": filename,
+            "file_id": file_id,
+            "method": "files.externalUpload",
+        }
+    complete_result = _call_slack_api(
+        "files.completeUploadExternal",
+        {
+            "channel_id": channel_id,
+            "files": [{"id": file_id, "title": title or filename.removesuffix(".md")}],
+            "initial_comment": initial_comment,
+        },
+    )
+    if not complete_result.get("ok"):
+        return {
+            "sent": False,
+            "reason": complete_result.get("reason") or "slack_file_complete_failed",
+            "error": complete_result.get("error") or "",
+            "filename": filename,
+            "file_id": file_id,
+            "method": "files.completeUploadExternal",
+        }
+    return {
+        "sent": True,
+        "filename": filename,
+        "file_id": file_id,
+        "method": "files.externalUpload",
+    }
+
+
 def _run_worker_request_background(request_id: str) -> None:
     """Run one queued worker request outside the Slack event response path."""
     # Slack event DB writes commit after the request handler exits. The
@@ -1077,7 +1172,7 @@ def _create_worker_request(
 
 
 def _review_message_for_result(title: str) -> str:
-    return f"자료조사 결과가 도착했습니다: {title}\n검토 후 확정이면 '확정' 또는 '좋아'라고 답해주세요. 수정이 필요하면 요청 사항을 그대로 남겨주세요."
+    return f"자료조사 결과 문서를 생성했습니다: {title}\n첨부된 파일을 검토하신 뒤 확정이면 '확정' 또는 '좋아'라고 답해주세요. 수정이 필요하면 요청 사항을 그대로 남겨주세요."
 
 
 def _positive_reply(text: str) -> bool:
@@ -1946,6 +2041,13 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
     )
     message = _review_message_for_result(title)
     send_result = _send_worker_result_message(conn, mapping, message, request_type=request_type)
+    file_upload_result = _upload_slack_result_document(
+        mapping,
+        company_name=_workflow_company_name(wf),
+        title=title,
+        content=content,
+        request_type=request_type,
+    )
     _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="review_waiting")
     _record_slack_activity(
         conn,
@@ -1958,6 +2060,14 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
             "artifact_id": artifact_id,
             "message_ts": send_result.get("ts") or "",
             "dry_run": bool(send_result.get("dry_run")),
+            "file_upload": {
+                "sent": bool(file_upload_result.get("sent")),
+                "reason": file_upload_result.get("reason") or "",
+                "filename": file_upload_result.get("filename") or "",
+                "file_id": file_upload_result.get("file_id") or "",
+                "dry_run": bool(file_upload_result.get("dry_run")),
+                "method": file_upload_result.get("method") or "",
+            },
         },
     )
     wf_after = conn.execute("SELECT current_stage_id, assignee, status FROM workflow_instances WHERE id=?", (workflow_id,)).fetchone()
@@ -1972,9 +2082,15 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
         "message": message,
         "message_sent": bool(send_result.get("sent")),
         "message_ts": send_result.get("ts") or "",
+        "file_upload_sent": bool(file_upload_result.get("sent")),
+        "file_upload_reason": file_upload_result.get("reason") or "",
+        "file_upload_filename": file_upload_result.get("filename") or "",
+        "file_upload_file_id": file_upload_result.get("file_id") or "",
     }
     if not send_result.get("sent"):
         response["reason"] = send_result.get("reason") or "send_failed"
+    if not file_upload_result.get("sent"):
+        response["file_upload_reason"] = file_upload_result.get("reason") or "file_upload_failed"
     return response
 
 

@@ -1518,13 +1518,26 @@ try:
 
     def fake_revision_result_slack(req, timeout=None):
         url = request_url(req)
-        payload = request_json(req)
         if url.endswith("/chat.update"):
+            payload = request_json(req)
             revision_result_slack_calls.append({"method": "chat.update", "payload": payload})
             return FakeHTTPResponse(payload={"ok": True, "ts": payload.get("ts")})
         if url.endswith("/chat.postMessage"):
+            payload = request_json(req)
             revision_result_slack_calls.append({"method": "chat.postMessage", "payload": payload})
             return FakeHTTPResponse(payload={"ok": True, "ts": "1710000500.000200"})
+        if url.endswith("/files.getUploadURLExternal"):
+            payload = request_json(req)
+            revision_result_slack_calls.append({"method": "files.getUploadURLExternal", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "upload_url": "https://slack-upload.example/FUPLOAD0500", "file_id": "FUPLOAD0500"})
+        if url == "https://slack-upload.example/FUPLOAD0500":
+            raw = getattr(req, "data", b"") or b""
+            revision_result_slack_calls.append({"method": "external_upload", "body": raw.decode("utf-8")})
+            return FakeHTTPResponse(body=b"OK")
+        if url.endswith("/files.completeUploadExternal"):
+            payload = request_json(req)
+            revision_result_slack_calls.append({"method": "files.completeUploadExternal", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "files": [{"id": "FUPLOAD0500"}]})
         raise AssertionError(f"unexpected Slack API call: {url}")
 
     slack_onboarding_api.urllib.request.urlopen = fake_revision_result_slack
@@ -1550,7 +1563,18 @@ finally:
     else:
         os.environ["SLACK_BOT_TOKEN"] = saved_revision_result_slack_bot_token
 check("Revision worker result returns to review", r.status_code == 200 and r.json().get("current_stage_id") == "p_user_review_waiting", f"got {r.status_code}: {r.text}")
-check("Revision worker result posts a new completion message", [c["method"] for c in revision_result_slack_calls] == ["chat.postMessage"], revision_result_slack_calls)
+revision_result = r.json()
+check("Revision worker result posts a new completion message", [c["method"] for c in revision_result_slack_calls] == ["chat.postMessage", "files.getUploadURLExternal", "external_upload", "files.completeUploadExternal"], revision_result_slack_calls)
+check("Revision worker result uploads Slack markdown document", any(c["method"] == "files.completeUploadExternal" for c in revision_result_slack_calls), revision_result_slack_calls)
+check(
+    "Revision worker result upload payload includes channel, filename, and markdown content",
+    any((c.get("payload") or {}).get("filename", "").endswith(".md") and "수정테스트" in str((c.get("payload") or {}).get("filename") or "") for c in revision_result_slack_calls if c["method"] == "files.getUploadURLExternal")
+    and any((c.get("payload") or {}).get("channel_id") == "CREVTEST" and (c.get("payload") or {}).get("files", [{}])[0].get("id") == "FUPLOAD0500" for c in revision_result_slack_calls if c["method"] == "files.completeUploadExternal")
+    and any("## 수정테스트 자료조사 수정본" in c.get("body", "") for c in revision_result_slack_calls if c["method"] == "external_upload"),
+    revision_result_slack_calls,
+)
+check("Revision worker result message stays user-friendly", all(term not in revision_result.get("message", "").lower() for term in ("worker", "adapter", "notebooklm", "token", "cookie")), revision_result.get("message", ""))
+check("Revision worker result exposes upload metadata", revision_result.get("file_upload_sent") is True and revision_result.get("file_upload_reason") in (None, "") and revision_result.get("file_upload_file_id") == "FUPLOAD0500", revision_result)
 revision_file_payload = slack_message_single_file_payload("EvREVISIONFILE1", channel_id="CREVTEST", file_id="FREVISIONDOC")
 revision_file_body, revision_file_headers = slack_headers(revision_file_payload)
 orig_revision_file_runner_kick = getattr(slack_onboarding_api, "_kick_worker_runner", None)
