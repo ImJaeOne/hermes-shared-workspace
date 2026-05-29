@@ -322,7 +322,11 @@ if research_adapters:
         {"files": timeout_aware_client.sources.files, "metadata": timeout_aware_metadata},
     )
 
-    revision_prompt = {"skill_id": "skill_001", "name": "기획 자료조사 결과 정리", "content": "핵심 요약 중심으로 정리"}
+    revision_prompt = {
+        "skill_id": "skill_001",
+        "name": "기획 자료조사 결과 정리",
+        "content": "초기 자료조사용 프롬프트: 핵심 요약 중심으로 정리",
+    }
     revision_attachment_payload = {
         "source_files": four_source_files[:1],
         "revision": {
@@ -341,6 +345,21 @@ if research_adapters:
         "NotebookLM adapter carries revision attachments into question context",
         "revision-notes.md" in revision_question or "수정 요청 메모" in revision_question,
         revision_question,
+    )
+    revision_instruction_question = research_adapters.NotebookLmPyResearchAdapter()._build_question(
+        {
+            "task_type": "revision",
+            "company_name": "수정테스트",
+            "source_files": four_source_files[:1],
+            "revision": {"instruction": "시놉시스는 어떻게 처리하는게 좋을지 알려줘"},
+        },
+        revision_prompt,
+    )
+    check(
+        "NotebookLM revision question omits initial research prompt content",
+        "초기 자료조사용 프롬프트" not in revision_instruction_question
+        and "시놉시스는 어떻게 처리하는게 좋을지 알려줘" in revision_instruction_question,
+        revision_instruction_question,
     )
 
     duplicate_client = FakeNotebookClient()
@@ -1292,15 +1311,37 @@ check(
 revision_text_payload = slack_message_text_payload("EvREVISIONTEXT1", "시장 규모와 경쟁사 비교를 더 보강해주세요.", channel_id="CREVTEST")
 revision_text_body, revision_text_headers = slack_headers(revision_text_payload)
 orig_revision_text_runner_kick = getattr(slack_onboarding_api, "_kick_worker_runner", None)
+orig_revision_text_urlopen = slack_onboarding_api.urllib.request.urlopen
+saved_revision_text_dry_run = os.environ.get("HERMES_AX_SLACK_DRY_RUN")
+saved_revision_text_ax_bot_token = os.environ.get("HERMES_AX_SLACK_BOT_TOKEN")
+saved_revision_text_slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
 revision_text_runner_kicks = []
+revision_text_slack_calls = []
 try:
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = "false"
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = "test-bot-token"
+    os.environ.pop("SLACK_BOT_TOKEN", None)
+
+    def fake_revision_text_slack(req, timeout=None):
+        url = request_url(req)
+        payload = request_json(req)
+        if url.endswith("/chat.update"):
+            revision_text_slack_calls.append({"method": "chat.update", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": payload.get("ts")})
+        if url.endswith("/chat.postMessage"):
+            revision_text_slack_calls.append({"method": "chat.postMessage", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": "1710000500.000100"})
+        raise AssertionError(f"unexpected Slack API call: {url}")
+
     def fake_revision_text_runner_kick(request_id):
         revision_text_runner_kicks.append(request_id)
         return {"scheduled": True, "request_id": request_id, "mode": "fake"}
 
+    slack_onboarding_api.urllib.request.urlopen = fake_revision_text_slack
     slack_onboarding_api._kick_worker_runner = fake_revision_text_runner_kick
     r = anon.post("/slack/events", content=revision_text_body, headers=revision_text_headers)
 finally:
+    slack_onboarding_api.urllib.request.urlopen = orig_revision_text_urlopen
     if orig_revision_text_runner_kick is None:
         try:
             delattr(slack_onboarding_api, "_kick_worker_runner")
@@ -1308,9 +1349,22 @@ finally:
             pass
     else:
         slack_onboarding_api._kick_worker_runner = orig_revision_text_runner_kick
+    if saved_revision_text_dry_run is None:
+        os.environ.pop("HERMES_AX_SLACK_DRY_RUN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_DRY_RUN"] = saved_revision_text_dry_run
+    if saved_revision_text_ax_bot_token is None:
+        os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_revision_text_ax_bot_token
+    if saved_revision_text_slack_bot_token is None:
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["SLACK_BOT_TOKEN"] = saved_revision_text_slack_bot_token
 check("Slack review revision text status", r.status_code == 200, f"got {r.status_code}: {r.text}")
 revision_text_result = r.json()
 check("Slack review free-text creates revision request", revision_text_result.get("review_status") == "revision_requested" and revision_text_result.get("current_stage_id") == "p_revision_running", str(revision_text_result))
+check("Slack review revision text posts a new worker handoff message", [c["method"] for c in revision_text_slack_calls] == ["chat.postMessage"], revision_text_slack_calls)
 with plugin_api.get_db() as conn:
     revision_request = fetch_worker_request(conn, revision_wf_id, "revision")
     revision_payload = json.loads(revision_request["payload_json"]) if revision_request else {}
@@ -1327,26 +1381,85 @@ check(
     {"response": revision_text_result, "request_id": revision_request_id, "runner_kicks": revision_text_runner_kicks},
 )
 mark_worker_request_running(revision_request_id)
-r = client.post("/worker/results", json={
-    "request_id": revision_request_id,
-    "workflow_id": revision_wf_id,
-    "status": "succeeded",
-    "title": "수정테스트 자료조사 수정본",
-    "content": "## 수정테스트 자료조사 수정본\n\n시장 규모와 경쟁사 비교를 보강했습니다.",
-})
+orig_revision_result_urlopen = slack_onboarding_api.urllib.request.urlopen
+saved_revision_result_dry_run = os.environ.get("HERMES_AX_SLACK_DRY_RUN")
+saved_revision_result_ax_bot_token = os.environ.get("HERMES_AX_SLACK_BOT_TOKEN")
+saved_revision_result_slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
+revision_result_slack_calls = []
+try:
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = "false"
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = "test-bot-token"
+    os.environ.pop("SLACK_BOT_TOKEN", None)
+
+    def fake_revision_result_slack(req, timeout=None):
+        url = request_url(req)
+        payload = request_json(req)
+        if url.endswith("/chat.update"):
+            revision_result_slack_calls.append({"method": "chat.update", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": payload.get("ts")})
+        if url.endswith("/chat.postMessage"):
+            revision_result_slack_calls.append({"method": "chat.postMessage", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": "1710000500.000200"})
+        raise AssertionError(f"unexpected Slack API call: {url}")
+
+    slack_onboarding_api.urllib.request.urlopen = fake_revision_result_slack
+    r = client.post("/worker/results", json={
+        "request_id": revision_request_id,
+        "workflow_id": revision_wf_id,
+        "status": "succeeded",
+        "title": "수정테스트 자료조사 수정본",
+        "content": "## 수정테스트 자료조사 수정본\n\n시장 규모와 경쟁사 비교를 보강했습니다.",
+    })
+finally:
+    slack_onboarding_api.urllib.request.urlopen = orig_revision_result_urlopen
+    if saved_revision_result_dry_run is None:
+        os.environ.pop("HERMES_AX_SLACK_DRY_RUN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_DRY_RUN"] = saved_revision_result_dry_run
+    if saved_revision_result_ax_bot_token is None:
+        os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_revision_result_ax_bot_token
+    if saved_revision_result_slack_bot_token is None:
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["SLACK_BOT_TOKEN"] = saved_revision_result_slack_bot_token
 check("Revision worker result returns to review", r.status_code == 200 and r.json().get("current_stage_id") == "p_user_review_waiting", f"got {r.status_code}: {r.text}")
+check("Revision worker result posts a new completion message", [c["method"] for c in revision_result_slack_calls] == ["chat.postMessage"], revision_result_slack_calls)
 revision_file_payload = slack_message_single_file_payload("EvREVISIONFILE1", channel_id="CREVTEST", file_id="FREVISIONDOC")
 revision_file_body, revision_file_headers = slack_headers(revision_file_payload)
 orig_revision_file_runner_kick = getattr(slack_onboarding_api, "_kick_worker_runner", None)
+orig_revision_file_urlopen = slack_onboarding_api.urllib.request.urlopen
+saved_revision_file_dry_run = os.environ.get("HERMES_AX_SLACK_DRY_RUN")
+saved_revision_file_ax_bot_token = os.environ.get("HERMES_AX_SLACK_BOT_TOKEN")
+saved_revision_file_slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
 revision_file_runner_kicks = []
+revision_file_slack_calls = []
 try:
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = "false"
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = "test-bot-token"
+    os.environ.pop("SLACK_BOT_TOKEN", None)
+
+    def fake_revision_file_slack(req, timeout=None):
+        url = request_url(req)
+        payload = request_json(req)
+        if url.endswith("/chat.update"):
+            revision_file_slack_calls.append({"method": "chat.update", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": payload.get("ts")})
+        if url.endswith("/chat.postMessage"):
+            revision_file_slack_calls.append({"method": "chat.postMessage", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": "1710000500.000300"})
+        raise AssertionError(f"unexpected Slack API call: {url}")
+
     def fake_revision_file_runner_kick(request_id):
         revision_file_runner_kicks.append(request_id)
         return {"scheduled": True, "request_id": request_id, "mode": "fake"}
 
+    slack_onboarding_api.urllib.request.urlopen = fake_revision_file_slack
     slack_onboarding_api._kick_worker_runner = fake_revision_file_runner_kick
     r = anon.post("/slack/events", content=revision_file_body, headers=revision_file_headers)
 finally:
+    slack_onboarding_api.urllib.request.urlopen = orig_revision_file_urlopen
     if orig_revision_file_runner_kick is None:
         try:
             delattr(slack_onboarding_api, "_kick_worker_runner")
@@ -1354,9 +1467,22 @@ finally:
             pass
     else:
         slack_onboarding_api._kick_worker_runner = orig_revision_file_runner_kick
+    if saved_revision_file_dry_run is None:
+        os.environ.pop("HERMES_AX_SLACK_DRY_RUN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_DRY_RUN"] = saved_revision_file_dry_run
+    if saved_revision_file_ax_bot_token is None:
+        os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_revision_file_ax_bot_token
+    if saved_revision_file_slack_bot_token is None:
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["SLACK_BOT_TOKEN"] = saved_revision_file_slack_bot_token
 check("Slack review attached revision file status", r.status_code == 200, f"got {r.status_code}: {r.text}")
 revision_file_result = r.json()
 check("Slack review attached file creates revision request", revision_file_result.get("review_status") == "revision_requested" and revision_file_result.get("current_stage_id") == "p_revision_running", str(revision_file_result))
+check("Slack review attached file posts a new worker handoff message", [c["method"] for c in revision_file_slack_calls] == ["chat.postMessage"], revision_file_slack_calls)
 with plugin_api.get_db() as conn:
     revision_file_request = fetch_worker_request(conn, revision_wf_id, "revision")
     revision_file_payload_json = json.loads(revision_file_request["payload_json"]) if revision_file_request else {}
@@ -1394,11 +1520,48 @@ worker_failure_payload = {
     "status": "failed",
     "error": "NotebookLM auth expired cookie token /tmp/secret-storage.json",
 }
-r = client.post("/worker/results", json=worker_failure_payload)
+orig_revision_failure_urlopen = slack_onboarding_api.urllib.request.urlopen
+saved_revision_failure_dry_run = os.environ.get("HERMES_AX_SLACK_DRY_RUN")
+saved_revision_failure_ax_bot_token = os.environ.get("HERMES_AX_SLACK_BOT_TOKEN")
+saved_revision_failure_slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
+revision_failure_slack_calls = []
+try:
+    os.environ["HERMES_AX_SLACK_DRY_RUN"] = "false"
+    os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = "test-bot-token"
+    os.environ.pop("SLACK_BOT_TOKEN", None)
+
+    def fake_revision_failure_slack(req, timeout=None):
+        url = request_url(req)
+        payload = request_json(req)
+        if url.endswith("/chat.update"):
+            revision_failure_slack_calls.append({"method": "chat.update", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": payload.get("ts")})
+        if url.endswith("/chat.postMessage"):
+            revision_failure_slack_calls.append({"method": "chat.postMessage", "payload": payload})
+            return FakeHTTPResponse(payload={"ok": True, "ts": "1710000500.000400"})
+        raise AssertionError(f"unexpected Slack API call: {url}")
+
+    slack_onboarding_api.urllib.request.urlopen = fake_revision_failure_slack
+    r = client.post("/worker/results", json=worker_failure_payload)
+finally:
+    slack_onboarding_api.urllib.request.urlopen = orig_revision_failure_urlopen
+    if saved_revision_failure_dry_run is None:
+        os.environ.pop("HERMES_AX_SLACK_DRY_RUN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_DRY_RUN"] = saved_revision_failure_dry_run
+    if saved_revision_failure_ax_bot_token is None:
+        os.environ.pop("HERMES_AX_SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["HERMES_AX_SLACK_BOT_TOKEN"] = saved_revision_failure_ax_bot_token
+    if saved_revision_failure_slack_bot_token is None:
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+    else:
+        os.environ["SLACK_BOT_TOKEN"] = saved_revision_failure_slack_bot_token
 check("Worker failure receipt status", r.status_code == 200, f"got {r.status_code}: {r.text}")
 worker_failure = r.json()
 check("Worker failure sends understandable Slack message", worker_failure.get("ok") is True and worker_failure.get("message_sent") is True and "오류" in worker_failure.get("message", ""), str(worker_failure))
 check("Worker failure hides internal diagnostics from Slack message", all(term not in worker_failure.get("message", "") for term in ("NotebookLM", "cookie", "token", "/tmp/secret")), str(worker_failure))
+check("Revision worker failure posts a new failure message", [c["method"] for c in revision_failure_slack_calls] == ["chat.postMessage"], revision_failure_slack_calls)
 with plugin_api.get_db() as conn:
     failed_activity_count = conn.execute("SELECT count(*) FROM activity_logs WHERE workflow_id=? AND action='slack.worker_result_failed'", (revision_wf_id,)).fetchone()[0]
 r = client.post("/worker/results", json=worker_failure_payload)

@@ -554,6 +554,13 @@ def _send_progress_message(conn: sqlite3.Connection, mapping: sqlite3.Row, messa
     return _post_slack_message(mapping["channel_id"], message)
 
 
+def _send_worker_result_message(conn: sqlite3.Connection, mapping: sqlite3.Row, message: str, *, request_type: str) -> dict[str, Any]:
+    """Send revision worker result updates as new Slack messages."""
+    if request_type == "revision":
+        return _post_slack_message(mapping["channel_id"], message)
+    return _send_progress_message(conn, mapping, message)
+
+
 def _run_worker_request_background(request_id: str) -> None:
     """Run one queued worker request outside the Slack event response path."""
     # Slack event DB writes commit after the request handler exits. The
@@ -1205,7 +1212,7 @@ def _handle_review_reply_event(
             revision_attachments=attachments,
         )
         message = "수정 요청 파일을 확인했습니다. 기획팀 임사원에게 자료조사 worker 수정 실행을 전달했습니다."
-        send_result = _send_progress_message(conn, mapping, message)
+        send_result = _post_slack_message(mapping["channel_id"], message)
         _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="revision_running")
         runner_kick_result = _kick_worker_runner(worker_request["id"])
         _record_slack_activity(
@@ -1282,7 +1289,7 @@ def _handle_review_reply_event(
             revision_attachments=[],
         )
         message = "수정 요청을 확인했습니다. 기획팀 임사원에게 자료조사 worker 수정 실행을 전달했습니다."
-        send_result = _send_progress_message(conn, mapping, message)
+        send_result = _post_slack_message(mapping["channel_id"], message)
         _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="revision_running")
         runner_kick_result = _kick_worker_runner(worker_request["id"])
         _record_slack_activity(
@@ -1865,6 +1872,7 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
 
     status = str(payload.get("status") or "succeeded").strip().lower()
     terminal_status = "completed" if status in {"succeeded", "completed", "success"} else "failed"
+    request_type = str(worker_request["request_type"] or "").strip()
     now = _now()
     if terminal_status == "completed":
         claimed = conn.execute(
@@ -1884,7 +1892,7 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
     if terminal_status == "failed":
         error_message = str(payload.get("error") or payload.get("message") or "worker_failed").strip()
         message = "자료조사 작업 중 오류가 발생했습니다. 기획팀 임팀장이 확인 후 다시 안내드리겠습니다."
-        send_result = _send_progress_message(conn, mapping, message)
+        send_result = _send_worker_result_message(conn, mapping, message, request_type=request_type)
         _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="worker_failed")
         _record_slack_activity(
             conn,
@@ -1937,7 +1945,7 @@ def _record_worker_result(conn: sqlite3.Connection, payload: dict[str, Any]) -> 
         status="active",
     )
     message = _review_message_for_result(title)
-    send_result = _send_progress_message(conn, mapping, message)
+    send_result = _send_worker_result_message(conn, mapping, message, request_type=request_type)
     _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="review_waiting")
     _record_slack_activity(
         conn,
