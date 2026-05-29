@@ -15,8 +15,9 @@ from pathlib import Path
 
 SLACK_EVENTS_PUBLIC_PATH = "/api/plugins/hermes-ax/slack/events"
 DEFAULT_WEB_SERVER_PATH = Path("/opt/hermes-agent/hermes_cli/web_server.py")
+DEFAULT_PUBLIC_PATHS_PATH = Path("/opt/hermes-agent/hermes_cli/dashboard_auth/public_paths.py")
 PUBLIC_API_BLOCK_RE = re.compile(
-    r"(?P<header>^_PUBLIC_API_PATHS[^\n]*frozenset\(\{\n)"
+    r"(?P<header>^_?PUBLIC_API_PATHS\b[^\n]*frozenset\(\{\n)"
     r"(?P<body>.*?)"
     r"(?P<footer>^[ \t]*\}\)[^\n]*\n?)",
     re.MULTILINE | re.DOTALL,
@@ -58,12 +59,26 @@ def patch_file(path: Path) -> bool:
     return True
 
 
+def _default_target_path() -> Path:
+    """Return the Hermes Dashboard file that owns the public API allowlist.
+
+    Older Hermes Agent builds defined ``_PUBLIC_API_PATHS`` directly in
+    ``web_server.py``.  Newer builds moved the shared list to
+    ``dashboard_auth/public_paths.py`` so both legacy token auth and the OAuth
+    gate use the same allowlist.  Prefer the shared module when it exists, while
+    keeping the old Docker image path compatible.
+    """
+    if DEFAULT_PUBLIC_PATHS_PATH.exists():
+        return DEFAULT_PUBLIC_PATHS_PATH
+    return DEFAULT_WEB_SERVER_PATH
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
-    path = Path(argv[0]) if argv else DEFAULT_WEB_SERVER_PATH
+    path = Path(argv[0]) if argv else _default_target_path()
     changed = patch_file(path)
     action = "patched" if changed else "already patched"
-    print(f"Hermes Dashboard public API allowlist {action}: {SLACK_EVENTS_PUBLIC_PATH}")
+    print(f"Hermes Dashboard public API allowlist {action}: {SLACK_EVENTS_PUBLIC_PATH} in {path}")
     return 0
 
 

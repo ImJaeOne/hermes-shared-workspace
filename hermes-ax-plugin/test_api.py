@@ -60,6 +60,38 @@ def check(label, condition, detail=""):
         print(f"  FAIL  {label} — {detail}")
 
 
+print("\n=== Hermes Dashboard Public API Patch ===")
+legacy_public_api_text = '''_PUBLIC_API_PATHS = frozenset({
+    "/api/status",
+    "/api/dashboard/plugins",
+})
+'''
+patched_legacy_public_api_text = patch_public_api_allowlist_text(legacy_public_api_text)
+check(
+    "dashboard allowlist patch supports legacy web_server block",
+    SLACK_EVENTS_PUBLIC_PATH in patched_legacy_public_api_text
+    and patched_legacy_public_api_text.count(SLACK_EVENTS_PUBLIC_PATH) == 1,
+    patched_legacy_public_api_text,
+)
+shared_public_api_text = '''PUBLIC_API_PATHS: frozenset[str] = frozenset({
+    "/api/status",
+    "/api/dashboard/plugins",
+})
+'''
+patched_shared_public_api_text = patch_public_api_allowlist_text(shared_public_api_text)
+check(
+    "dashboard allowlist patch supports shared dashboard_auth public_paths block",
+    SLACK_EVENTS_PUBLIC_PATH in patched_shared_public_api_text
+    and patched_shared_public_api_text.count(SLACK_EVENTS_PUBLIC_PATH) == 1,
+    patched_shared_public_api_text,
+)
+check(
+    "dashboard allowlist patch is idempotent for Slack webhook path",
+    patch_public_api_allowlist_text(patched_shared_public_api_text) == patched_shared_public_api_text,
+    patched_shared_public_api_text,
+)
+
+
 print("\n=== Research Adapters ===")
 try:
     import research_adapters
