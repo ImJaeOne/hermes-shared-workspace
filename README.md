@@ -6,6 +6,8 @@
 
 현재 저장소의 실행/배포 단위는 `hermes-ax-plugin/`입니다. 기획 자동화, AX Dashboard, MCP 서버, Slack 자료조사 worker는 먼저 이 플러그인 안에서 통합 운영하고, 도메인별 패키지 분리는 필요해질 때 별도 결정 기록/Issue로 진행합니다.
 
+기획 자료조사의 장기 목표는 Hermes Agent를 서버에 함께 배포해 회사 공용 AI credential, persistent `HERMES_HOME`, Hermes skill/prompt/memory, AX workflow를 결합한 자가 발전형 업무 agent를 만드는 것입니다. 비개발자 직원은 Slack/AX Dashboard만 사용하고, `planninglearner` 경로에서 승인된 개선 후보만 prompt/skill/memory에 반영합니다. 상세 결정은 `hermes-ax-plugin/docs/decisions/planning-research-self-improvement.md`를 기준으로 합니다.
+
 ```text
 innodive-automation/
   hermes-ax-plugin/        # 공통 AX Dashboard / MCP / Slack 자료조사 / Railway 배포 단위
