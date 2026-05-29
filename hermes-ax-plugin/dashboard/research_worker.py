@@ -71,25 +71,37 @@ def _load_payload(request_row: sqlite3.Row) -> dict[str, Any]:
 
 def _enrich_source_files(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
     """Attach artifact metadata/content for adapters without persisting secrets back."""
+
+    def _enrich_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        enriched_items: list[dict[str, Any]] = []
+        for source in items:
+            if not isinstance(source, dict):
+                continue
+            item = dict(source)
+            artifact_id = str(item.get("artifact_id") or "").strip()
+            if artifact_id:
+                artifact = conn.execute(
+                    """SELECT id, title, content, content_type, file_path, file_size, mime_type,
+                              storage_backend, storage_key, original_filename, version, is_latest
+                       FROM artifacts WHERE id=?""",
+                    (artifact_id,),
+                ).fetchone()
+                if artifact:
+                    item["artifact"] = _row_to_dict(artifact)
+            enriched_items.append(item)
+        return enriched_items
+
     cloned = dict(payload)
     source_files = payload.get("source_files") if isinstance(payload.get("source_files"), list) else []
-    enriched: list[dict[str, Any]] = []
-    for source in source_files:
-        if not isinstance(source, dict):
-            continue
-        item = dict(source)
-        artifact_id = str(item.get("artifact_id") or "").strip()
-        if artifact_id:
-            artifact = conn.execute(
-                """SELECT id, title, content, content_type, file_path, file_size, mime_type,
-                          storage_backend, storage_key, original_filename, version, is_latest
-                   FROM artifacts WHERE id=?""",
-                (artifact_id,),
-            ).fetchone()
-            if artifact:
-                item["artifact"] = _row_to_dict(artifact)
-        enriched.append(item)
-    cloned["source_files"] = enriched
+    cloned["source_files"] = _enrich_items(source_files)
+
+    revision = payload.get("revision") if isinstance(payload.get("revision"), dict) else None
+    if revision is not None:
+        revision_cloned = dict(revision)
+        attachments = revision.get("attachments") if isinstance(revision.get("attachments"), list) else []
+        revision_cloned["attachments"] = _enrich_items(attachments)
+        cloned["revision"] = revision_cloned
+
     return cloned
 
 

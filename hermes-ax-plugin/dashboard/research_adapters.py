@@ -225,6 +225,105 @@ def _source_summary_lines(sources: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _revision_attachments(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    revision = payload.get("revision") if isinstance(payload.get("revision"), dict) else {}
+    attachments = revision.get("attachments") if isinstance(revision.get("attachments"), list) else []
+    return [item for item in attachments if isinstance(item, dict)]
+
+
+def _upload_source_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = payload.get("source_files") if isinstance(payload.get("source_files"), list) else []
+    candidates = [item for item in sources if isinstance(item, dict)]
+    for attachment in _revision_attachments(payload):
+        item = dict(attachment)
+        item.setdefault("source_kind", "revision_attachment")
+        candidates.append(item)
+    return candidates
+
+
+def _source_title_from_object(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("title") or item.get("name") or item.get("display_name") or "").strip()
+    return str(getattr(item, "title", "") or getattr(item, "name", "") or getattr(item, "display_name", "") or "").strip()
+
+
+def _source_notebook_id_from_object(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("notebook_id") or item.get("notebookId") or "").strip()
+    return str(getattr(item, "notebook_id", "") or getattr(item, "notebookId", "") or "").strip()
+
+
+def _collect_source_titles(value: Any, *, notebook_id: str, require_notebook_match: bool, titles: set[str]) -> None:
+    if value is None:
+        return
+    if isinstance(value, dict):
+        if "sources" in value:
+            _collect_source_titles(value.get("sources"), notebook_id=notebook_id, require_notebook_match=require_notebook_match, titles=titles)
+            return
+        source_notebook_id = _source_notebook_id_from_object(value)
+        if require_notebook_match and notebook_id and source_notebook_id != notebook_id:
+            return
+        title = _source_title_from_object(value)
+        if title:
+            titles.add(title)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _collect_source_titles(item, notebook_id=notebook_id, require_notebook_match=require_notebook_match, titles=titles)
+        return
+    for attr in ("sources", "items"):
+        if hasattr(value, attr):
+            _collect_source_titles(getattr(value, attr), notebook_id=notebook_id, require_notebook_match=require_notebook_match, titles=titles)
+            return
+    source_notebook_id = _source_notebook_id_from_object(value)
+    if require_notebook_match and notebook_id and source_notebook_id != notebook_id:
+        return
+    title = _source_title_from_object(value)
+    if title:
+        titles.add(title)
+
+
+async def _maybe_call_source_listing(method: Any, notebook_id: str) -> Any:
+    try:
+        try:
+            value = method(notebook_id)
+        except TypeError:
+            value = method()
+        if inspect.isawaitable(value):
+            value = await value
+        return value
+    except Exception:
+        return None
+
+
+async def _existing_notebook_source_titles(client: Any, notebook_id: str) -> set[str]:
+    """Best-effort existing source title detection for reused NotebookLM notebooks."""
+    titles: set[str] = set()
+    source_api = getattr(client, "sources", None)
+    if source_api:
+        # Local tests use notebook-tagged in-memory lists. Treat these as a
+        # shared cache, so items without this notebook_id must not suppress a
+        # different notebook's upload.
+        for attr in ("files", "texts", "items", "sources"):
+            _collect_source_titles(getattr(source_api, attr, None), notebook_id=notebook_id, require_notebook_match=True, titles=titles)
+
+        # Live notebooklm-py versions may expose a notebook-scoped listing
+        # method. If present, trust the returned collection as scoped to this
+        # notebook even when individual source objects do not repeat notebook_id.
+        for method_name in ("list", "list_all", "get_all", "all"):
+            method = getattr(source_api, method_name, None)
+            if callable(method):
+                value = await _maybe_call_source_listing(method, notebook_id)
+                _collect_source_titles(value, notebook_id=notebook_id, require_notebook_match=False, titles=titles)
+
+    notebooks_api = getattr(client, "notebooks", None)
+    get_notebook = getattr(notebooks_api, "get", None) if notebooks_api else None
+    if callable(get_notebook):
+        notebook = await _maybe_call_source_listing(get_notebook, notebook_id)
+        _collect_source_titles(notebook, notebook_id=notebook_id, require_notebook_match=False, titles=titles)
+    return titles
+
+
 class MockResearchAdapter(ResearchAdapter):
     """Deterministic adapter for local development, CI, and safe fallback."""
 
@@ -416,7 +515,7 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                         pass
 
     async def _add_sources(self, client: Any, notebook_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        sources = payload.get("source_files") if isinstance(payload.get("source_files"), list) else []
+        sources = _upload_source_candidates(payload)
         upload_sources: list[dict[str, Any]] = []
         source_wait_timeout = _configured_notebooklm_timeout()
         if not sources:
@@ -426,6 +525,8 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
 
         file_timeout_kwargs = _source_wait_timeout_kwargs(client.sources.add_file, source_wait_timeout)
         text_timeout_kwargs = _source_wait_timeout_kwargs(client.sources.add_text, source_wait_timeout)
+        reused_notebook = bool(_payload_notebook_id(payload))
+        existing_titles = await _existing_notebook_source_titles(client, notebook_id) if reused_notebook else set()
         for index, source in enumerate(sources):
             if not isinstance(source, dict):
                 upload_sources.append(
@@ -447,8 +548,12 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                 "original_filename": str(source.get("original_filename") or artifact.get("original_filename") or "").strip(),
                 "artifact_id": str(source.get("artifact_id") or artifact.get("id") or "").strip(),
                 "mime_type": mime_type or "",
+                "source_kind": str(source.get("source_kind") or "source_file").strip() or "source_file",
                 "wait_timeout_seconds": source_wait_timeout,
             }
+            if reused_notebook and title in existing_titles:
+                upload_sources.append({**diagnostic, "status": "skipped", "reason": "duplicate_notebook_source"})
+                continue
             if file_path:
                 try:
                     await client.sources.add_file(notebook_id, file_path, mime_type=mime_type, title=title, wait=True, **file_timeout_kwargs)
@@ -464,6 +569,7 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                         }
                     )
                 else:
+                    existing_titles.add(title)
                     upload_sources.append({**diagnostic, "status": "uploaded", "method": "file"})
                 continue
 
@@ -484,6 +590,7 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
                     }
                 )
             else:
+                existing_titles.add(title)
                 upload_sources.append({**diagnostic, "status": "uploaded", "method": "text", "reason": "file_path_unavailable"})
 
         succeeded_count = sum(1 for item in upload_sources if item.get("status") == "uploaded")
@@ -501,6 +608,7 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
         company = _company_name(payload)
         revision = payload.get("revision") if isinstance(payload.get("revision"), dict) else {}
         revision_instruction = str(revision.get("instruction") or "").strip()
+        revision_attachments = _revision_attachments(payload)
         prompt_content = str(prompt.get("content") or "").strip()
         source_names = "\n".join(_source_summary_lines(payload.get("source_files") or []))
         parts = [
@@ -517,6 +625,8 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
         ]
         if revision_instruction:
             parts.extend(["", f"수정 요청: {revision_instruction}"])
+        if revision_attachments:
+            parts.extend(["", "수정 요청 첨부 자료:", *(_source_summary_lines(revision_attachments))])
         return "\n".join(parts).strip()
 
 

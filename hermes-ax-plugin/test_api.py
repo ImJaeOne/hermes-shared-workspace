@@ -290,6 +290,60 @@ if research_adapters:
         {"files": timeout_aware_client.sources.files, "metadata": timeout_aware_metadata},
     )
 
+    revision_prompt = {"skill_id": "skill_001", "name": "기획 자료조사 결과 정리", "content": "핵심 요약 중심으로 정리"}
+    revision_attachment_payload = {
+        "source_files": four_source_files[:1],
+        "revision": {
+            "instruction": "",
+            "attachments": [
+                {
+                    "filename": "revision-notes.md",
+                    "title": "수정 요청 메모",
+                    "artifact": {"content": "# 수정 요청\n- 시장 규모와 경쟁사 비교를 더 보강해주세요."},
+                }
+            ],
+        },
+    }
+    revision_question = research_adapters.NotebookLmPyResearchAdapter()._build_question(revision_attachment_payload, revision_prompt)
+    check(
+        "NotebookLM adapter carries revision attachments into question context",
+        "revision-notes.md" in revision_question or "수정 요청 메모" in revision_question,
+        revision_question,
+    )
+
+    duplicate_client = FakeNotebookClient()
+    initial_duplicate_payload = {"source_files": four_source_files[:2]}
+    asyncio.run(
+        research_adapters.NotebookLmPyResearchAdapter()._add_sources(
+            duplicate_client,
+            "notebook-revision-reuse",
+            initial_duplicate_payload,
+        )
+    )
+    revision_source_files = four_source_files[:2] + [
+        {
+            "filename": "revision-notes.md",
+            "title": "수정 요청 메모",
+            "artifact": {"content": "# 수정 요청\n- 시장 규모와 경쟁사 비교를 더 보강해주세요."},
+        }
+    ]
+    duplicate_revision_metadata = asyncio.run(
+        research_adapters.NotebookLmPyResearchAdapter()._add_sources(
+            duplicate_client,
+            "notebook-revision-reuse",
+            {"notebook_id": "notebook-revision-reuse", "source_files": revision_source_files},
+        )
+    )
+    check(
+        "NotebookLM adapter skips duplicate initial sources on revision notebook reuse",
+        duplicate_revision_metadata.get("attempted_count") == 3
+        and duplicate_revision_metadata.get("succeeded_count") == 1
+        and duplicate_revision_metadata.get("skipped_count") == 2
+        and len([item for item in duplicate_revision_metadata.get("sources", []) if item.get("status") == "skipped"]) == 2
+        and len(duplicate_client.sources.files) == 2
+        and len(duplicate_client.sources.texts) == 1,
+        {"files": duplicate_client.sources.files, "texts": duplicate_client.sources.texts, "metadata": duplicate_revision_metadata},
+    )
 
 class FakeHTTPResponse:
     def __init__(self, *, payload: dict | None = None, body: bytes | None = None):
@@ -1205,7 +1259,23 @@ check(
 )
 revision_text_payload = slack_message_text_payload("EvREVISIONTEXT1", "시장 규모와 경쟁사 비교를 더 보강해주세요.", channel_id="CREVTEST")
 revision_text_body, revision_text_headers = slack_headers(revision_text_payload)
-r = anon.post("/slack/events", content=revision_text_body, headers=revision_text_headers)
+orig_revision_text_runner_kick = getattr(slack_onboarding_api, "_kick_worker_runner", None)
+revision_text_runner_kicks = []
+try:
+    def fake_revision_text_runner_kick(request_id):
+        revision_text_runner_kicks.append(request_id)
+        return {"scheduled": True, "request_id": request_id, "mode": "fake"}
+
+    slack_onboarding_api._kick_worker_runner = fake_revision_text_runner_kick
+    r = anon.post("/slack/events", content=revision_text_body, headers=revision_text_headers)
+finally:
+    if orig_revision_text_runner_kick is None:
+        try:
+            delattr(slack_onboarding_api, "_kick_worker_runner")
+        except AttributeError:
+            pass
+    else:
+        slack_onboarding_api._kick_worker_runner = orig_revision_text_runner_kick
 check("Slack review revision text status", r.status_code == 200, f"got {r.status_code}: {r.text}")
 revision_text_result = r.json()
 check("Slack review free-text creates revision request", revision_text_result.get("review_status") == "revision_requested" and revision_text_result.get("current_stage_id") == "p_revision_running", str(revision_text_result))
@@ -1216,6 +1286,14 @@ with plugin_api.get_db() as conn:
     check("Revision text worker request payload stored", revision_request is not None and revision_payload.get("task_type") == "revision" and "시장 규모" in revision_payload.get("revision", {}).get("instruction", ""), revision_payload)
     check("Revision text activity logged", revision_activity is not None, dict(revision_activity) if revision_activity else "")
 revision_request_id = revision_request["id"] if revision_request else "missing-revision-request"
+check(
+    "Slack review revision text schedules worker runner",
+    revision_request is not None
+    and revision_text_result.get("worker_runner_scheduled") is True
+    and revision_text_result.get("worker_runner_mode") == "fake"
+    and revision_text_runner_kicks == [revision_request_id],
+    {"response": revision_text_result, "request_id": revision_request_id, "runner_kicks": revision_text_runner_kicks},
+)
 mark_worker_request_running(revision_request_id)
 r = client.post("/worker/results", json={
     "request_id": revision_request_id,
@@ -1227,7 +1305,23 @@ r = client.post("/worker/results", json={
 check("Revision worker result returns to review", r.status_code == 200 and r.json().get("current_stage_id") == "p_user_review_waiting", f"got {r.status_code}: {r.text}")
 revision_file_payload = slack_message_single_file_payload("EvREVISIONFILE1", channel_id="CREVTEST", file_id="FREVISIONDOC")
 revision_file_body, revision_file_headers = slack_headers(revision_file_payload)
-r = anon.post("/slack/events", content=revision_file_body, headers=revision_file_headers)
+orig_revision_file_runner_kick = getattr(slack_onboarding_api, "_kick_worker_runner", None)
+revision_file_runner_kicks = []
+try:
+    def fake_revision_file_runner_kick(request_id):
+        revision_file_runner_kicks.append(request_id)
+        return {"scheduled": True, "request_id": request_id, "mode": "fake"}
+
+    slack_onboarding_api._kick_worker_runner = fake_revision_file_runner_kick
+    r = anon.post("/slack/events", content=revision_file_body, headers=revision_file_headers)
+finally:
+    if orig_revision_file_runner_kick is None:
+        try:
+            delattr(slack_onboarding_api, "_kick_worker_runner")
+        except AttributeError:
+            pass
+    else:
+        slack_onboarding_api._kick_worker_runner = orig_revision_file_runner_kick
 check("Slack review attached revision file status", r.status_code == 200, f"got {r.status_code}: {r.text}")
 revision_file_result = r.json()
 check("Slack review attached file creates revision request", revision_file_result.get("review_status") == "revision_requested" and revision_file_result.get("current_stage_id") == "p_revision_running", str(revision_file_result))
@@ -1253,6 +1347,14 @@ with plugin_api.get_db() as conn:
         revision_file_payload_json,
     )
 revision_file_request_id = revision_file_request["id"] if revision_file_request else "missing-revision-file-request"
+check(
+    "Slack review attachment schedules worker runner",
+    revision_file_request is not None
+    and revision_file_result.get("worker_runner_scheduled") is True
+    and revision_file_result.get("worker_runner_mode") == "fake"
+    and revision_file_runner_kicks == [revision_file_request_id],
+    {"response": revision_file_result, "request_id": revision_file_request_id, "runner_kicks": revision_file_runner_kicks},
+)
 mark_worker_request_running(revision_file_request_id)
 worker_failure_payload = {
     "request_id": revision_file_request_id,
