@@ -1207,6 +1207,7 @@ def _handle_review_reply_event(
         message = "수정 요청 파일을 확인했습니다. 기획팀 임사원에게 자료조사 worker 수정 실행을 전달했습니다."
         send_result = _send_progress_message(conn, mapping, message)
         _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="revision_running")
+        runner_kick_result = _kick_worker_runner(worker_request["id"])
         _record_slack_activity(
             conn,
             action="slack.revision_requested",
@@ -1214,7 +1215,7 @@ def _handle_review_reply_event(
             target_id=worker_request["id"],
             metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "request_type": "attachment", "dry_run": bool(send_result.get("dry_run"))},
         )
-        return {
+        response = {
             "ok": bool(send_result.get("sent")),
             "workflow_id": mapping["workflow_id"],
             "mapping_id": mapping["id"],
@@ -1226,6 +1227,10 @@ def _handle_review_reply_event(
             "message_sent": bool(send_result.get("sent")),
             "message_ts": send_result.get("ts") or "",
         }
+        if runner_kick_result:
+            response["worker_runner_scheduled"] = bool(runner_kick_result.get("scheduled"))
+            response["worker_runner_mode"] = runner_kick_result.get("mode", "")
+        return response
 
     if _positive_reply(text):
         final_artifact_id = _finalize_latest_research_artifact(conn, mapping["workflow_id"])
@@ -1279,6 +1284,7 @@ def _handle_review_reply_event(
         message = "수정 요청을 확인했습니다. 기획팀 임사원에게 자료조사 worker 수정 실행을 전달했습니다."
         send_result = _send_progress_message(conn, mapping, message)
         _upsert_material_state(conn, mapping=mapping, message=message, send_result=send_result, status="revision_running")
+        runner_kick_result = _kick_worker_runner(worker_request["id"])
         _record_slack_activity(
             conn,
             action="slack.revision_requested",
@@ -1286,7 +1292,7 @@ def _handle_review_reply_event(
             target_id=worker_request["id"],
             metadata={"team_id": team_id, "channel_id": channel_id, "event_id": event_id, "request_type": "text", "dry_run": bool(send_result.get("dry_run"))},
         )
-        return {
+        response = {
             "ok": bool(send_result.get("sent")),
             "workflow_id": mapping["workflow_id"],
             "mapping_id": mapping["id"],
@@ -1298,6 +1304,10 @@ def _handle_review_reply_event(
             "message_sent": bool(send_result.get("sent")),
             "message_ts": send_result.get("ts") or "",
         }
+        if runner_kick_result:
+            response["worker_runner_scheduled"] = bool(runner_kick_result.get("scheduled"))
+            response["worker_runner_mode"] = runner_kick_result.get("mode", "")
+        return response
     return {"ok": True, "ignored": True, "reason": "empty_review_reply", "event_type": "message"}
 
 

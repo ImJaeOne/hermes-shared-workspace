@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ARG HERMES_AGENT_REF=a618789dbabf396a00fb061a491f54e12f536a45
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HERMES_HOME=/data/.hermes \
@@ -18,7 +20,10 @@ RUN apt-get update \
 
 WORKDIR /opt
 
-RUN git clone --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent \
+RUN git init /opt/hermes-agent \
+    && git -C /opt/hermes-agent remote add origin https://github.com/NousResearch/hermes-agent.git \
+    && git -C /opt/hermes-agent fetch --depth 1 origin "${HERMES_AGENT_REF}" \
+    && git -C /opt/hermes-agent checkout --detach FETCH_HEAD \
     && python -m venv /opt/hermes-agent/venv \
     && /opt/hermes-agent/venv/bin/pip install --upgrade pip setuptools wheel \
     && /opt/hermes-agent/venv/bin/pip install -e "/opt/hermes-agent[web,mcp,cli,pty,slack,messaging]" \
