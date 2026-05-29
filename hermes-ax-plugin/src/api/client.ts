@@ -14,6 +14,7 @@ import type {
   CreateWorkflowRequest,
   DecideApprovalRequest,
   EventsResponse,
+  NotebookLmAuthStatusResponse,
   SkillsResponse,
   StatsResponse,
   TransitionRequest,
@@ -115,6 +116,7 @@ export const getBoard = (agentId: string, templateId?: string) => {
   return fetchJSON<BoardResponse>(`/board/${agentId}${params}`);
 };
 export const getStats = () => fetchJSON<StatsResponse>("/stats");
+export const getNotebookLmAuthStatus = () => fetchJSON<NotebookLmAuthStatusResponse>("/worker/notebooklm/auth-status");
 
 // --- Template ---
 export const createTemplate = (body: CreateTemplateRequest) =>

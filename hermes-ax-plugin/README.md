@@ -405,6 +405,28 @@ PY
 - `AUTH_PATH_exists=True`, `AUTH_PATH_is_file=True`, `AUTH_PATH_valid_json=True`이면 컨테이너 내부 파일 경로 방식이 최소 형식상 들어간 것입니다.
 - `AUTH_PATH`와 `AUTH_JSON`을 둘 다 설정하면 현재 구현은 `AUTH_PATH`를 먼저 사용하므로, 파일 경로가 틀린 상태라면 `AUTH_JSON`이 있어도 실패할 수 있습니다. Railway에서는 보통 둘 중 하나만 쓰고, 가능하면 `AUTH_JSON` 방식을 권장합니다.
 
+AX Dashboard 기획 화면 상단에는 관리자용 NotebookLM 연결 상태 카드가 표시됩니다. 같은 정보는 상위 Dashboard 인증을 통과한 요청에서 아래 endpoint로도 확인할 수 있으며, 응답에는 secret 원문이 아니라 `present`, `length`, `valid_json`, `exists`, `is_file`, `source`, `code` 같은 메타 정보만 포함됩니다.
+
+```text
+GET /api/plugins/hermes-ax/worker/notebooklm/auth-status
+```
+
+상태 코드 해석:
+
+- `notebooklm_auth_ready`: `AUTH_PATH` 또는 `AUTH_JSON`의 JSON 형식이 유효하거나, `AUTH_JSON`이 가리키는 파일 경로의 JSON 형식이 유효하거나, profile 실행 설정이 감지됨
+- `notebooklm_auth_not_configured`: `AUTH_PATH`/`AUTH_JSON`/`PROFILE` 모두 미설정
+- `notebooklm_auth_path_missing`: `AUTH_PATH`가 설정됐지만 컨테이너 내부에 파일이 없음. 이 경우 `AUTH_JSON`보다 `AUTH_PATH`가 우선되어 실패할 수 있음
+- `notebooklm_auth_path_invalid_json`: `AUTH_PATH` 파일은 있지만 JSON 형식이 유효하지 않음
+- `notebooklm_auth_json_invalid`: `AUTH_JSON` 값이 유효한 JSON이 아님
+
+운영 재인증 runbook:
+
+1. 일반 Slack/웹 사용자는 Google/NotebookLM 인증 갱신 절차를 수행하지 않습니다. 운영자만 전용 Google 계정으로 storage state를 갱신합니다.
+2. Google 비밀번호 변경, 2FA/보안 확인, 장기 미사용, NotebookLM 접속 실패가 있으면 로컬에서 위 Playwright 절차로 새 storage state JSON을 생성합니다.
+3. Railway Variables에서 `HERMES_AX_NOTEBOOKLM_AUTH_JSON`을 새 JSON 내용으로 교체하거나, `HERMES_AX_NOTEBOOKLM_AUTH_PATH` 방식이면 컨테이너에서 실제 파일이 존재하도록 배포/volume 경로를 갱신합니다.
+4. `AUTH_PATH`와 `AUTH_JSON`을 동시에 쓰면 path가 우선이므로, path 방식이 아니라면 `HERMES_AX_NOTEBOOKLM_AUTH_PATH`를 unset합니다.
+5. 배포 후 AX Dashboard 기획 화면의 NotebookLM 연결 상태 카드 또는 위 status endpoint에서 `can_run=true`와 `notebooklm_auth_ready`를 확인합니다.
+
 자료 확인 답변이 들어오면 `planning_worker_requests`에 queued request가 쌓입니다. 운영/테스트에서는 아래 endpoint로 실행할 수 있습니다.
 
 ```text

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { deleteWorkflow, downloadArtifactFile, getApiErrorMessage, getArtifact, getWorkflow } from "../../api/client";
+import { deleteWorkflow, downloadArtifactFile, getApiErrorMessage, getArtifact, getNotebookLmAuthStatus, getWorkflow } from "../../api/client";
 import { useApp } from "../../context/AppContext";
-import type { WorkflowDetailResponse } from "../../types/api";
+import type { WorkflowDetailResponse, NotebookLmAuthStatusResponse } from "../../types/api";
 import type { Artifact, StageDefinition, WorkflowInstance } from "../../types/models";
 import { CreateInstanceDialog } from "../shared/CreateInstanceDialog";
 import { EmptyState } from "../shared/EmptyState";
@@ -26,6 +26,9 @@ export function PlanningProjectBoard() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [deletingProject, setDeletingProject] = useState(false);
+  const [notebookAuthStatus, setNotebookAuthStatus] = useState<NotebookLmAuthStatusResponse | null>(null);
+  const [notebookAuthError, setNotebookAuthError] = useState("");
+  const [notebookAuthLoading, setNotebookAuthLoading] = useState(false);
   const detailRequestSeqRef = useRef(0);
 
   const projects = useMemo<ProjectSummary[]>(() => {
@@ -60,6 +63,24 @@ export function PlanningProjectBoard() {
       setSelectedProjectId(projects[0].workflow.id);
     }
   }, [projects, selectedProjectId]);
+
+  const loadNotebookLmAuthStatus = useCallback(async () => {
+    setNotebookAuthLoading(true);
+    setNotebookAuthError("");
+    try {
+      const status = await getNotebookLmAuthStatus();
+      setNotebookAuthStatus(status);
+    } catch (error) {
+      setNotebookAuthStatus(null);
+      setNotebookAuthError(getApiErrorMessage(error, "NotebookLM 인증 상태를 불러오지 못했습니다."));
+    } finally {
+      setNotebookAuthLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadNotebookLmAuthStatus();
+  }, [loadNotebookLmAuthStatus]);
 
   const loadWorkflowDetail = useCallback(async (workflowId: string) => {
     const requestSeq = detailRequestSeqRef.current + 1;
@@ -143,6 +164,12 @@ export function PlanningProjectBoard() {
 
   return (
     <div className="ax-planning-board">
+      <NotebookLmAuthStatusCard
+        status={notebookAuthStatus}
+        error={notebookAuthError}
+        loading={notebookAuthLoading}
+        onRefresh={loadNotebookLmAuthStatus}
+      />
       <section className="ax-planning-projects-panel">
         <div className="ax-planning-panel-header">
           <div>
@@ -234,6 +261,66 @@ export function PlanningProjectBoard() {
       )}
     </div>
   );
+}
+
+interface NotebookLmAuthStatusCardProps {
+  status: NotebookLmAuthStatusResponse | null;
+  error: string;
+  loading: boolean;
+  onRefresh: () => void;
+}
+
+function NotebookLmAuthStatusCard({ status, error, loading, onRefresh }: NotebookLmAuthStatusCardProps) {
+  const stateClass = status?.can_run ? "ready" : status?.configured ? "warning" : "missing";
+  const stateLabel = loading
+    ? "확인 중"
+    : error
+      ? "확인 실패"
+      : status?.can_run
+        ? "연결 준비됨"
+        : status?.configured
+          ? "갱신 필요"
+          : "설정 필요";
+  const sourceLabel = status ? formatNotebookLmAuthSource(status.source) : "상태 미확인";
+  const detail = error || (status ? getNotebookLmAuthStatusMessage(status) : "NotebookLM 인증 상태를 확인합니다.");
+
+  return (
+    <section className={`ax-notebooklm-auth-card ax-notebooklm-auth-card-${stateClass}`}>
+      <div>
+        <p className="ax-eyebrow">자료조사 엔진 인증</p>
+        <h3>NotebookLM 연결 상태</h3>
+        <p>{detail}</p>
+      </div>
+      <div className="ax-notebooklm-auth-meta">
+        <span>{stateLabel}</span>
+        <small>{sourceLabel}</small>
+        <button className="ax-btn ax-btn-ghost ax-btn-sm" onClick={onRefresh} disabled={loading}>
+          다시 확인
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function formatNotebookLmAuthSource(source: string): string {
+  if (source === "auth_path") return "AUTH_PATH 우선";
+  if (source === "auth_json") return "AUTH_JSON";
+  if (source === "auth_json_path") return "AUTH_JSON 경로";
+  if (source === "profile") return "PROFILE";
+  return "미설정";
+}
+
+function getNotebookLmAuthStatusMessage(status: NotebookLmAuthStatusResponse): string {
+  if (status.can_run) {
+    if (status.source === "auth_path") return "인증 파일이 존재하고 JSON 형식이 유효합니다. secret 값은 표시하지 않습니다.";
+    if (status.source === "auth_json") return "Railway 변수의 인증 JSON 형식이 유효합니다. 원문 secret은 표시하지 않습니다.";
+    if (status.source === "auth_json_path") return "AUTH_JSON에 지정된 파일 경로가 존재하고 JSON 형식이 유효합니다. secret 값은 표시하지 않습니다.";
+    if (status.source === "profile") return "NotebookLM profile 기반 실행 설정이 감지되었습니다.";
+  }
+  if (status.code === "notebooklm_auth_path_missing") return "AUTH_PATH가 설정됐지만 파일을 찾을 수 없습니다. AUTH_JSON보다 우선 적용됩니다.";
+  if (status.code === "notebooklm_auth_path_invalid_json") return "AUTH_PATH 파일의 JSON 형식이 유효하지 않습니다. 운영자가 재인증 state를 갱신해야 합니다.";
+  if (status.code === "notebooklm_auth_json_invalid") return "AUTH_JSON 값이 유효한 JSON이 아닙니다. Railway Variables의 값을 갱신해야 합니다.";
+  return "NotebookLM 인증 설정이 없습니다. 운영자는 AUTH_JSON 또는 AUTH_PATH를 설정해야 합니다.";
 }
 
 interface ProjectDetailProps {
