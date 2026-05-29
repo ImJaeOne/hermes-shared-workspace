@@ -611,6 +611,27 @@ class NotebookLmPyResearchAdapter(ResearchAdapter):
         revision_attachments = _revision_attachments(payload)
         prompt_content = str(prompt.get("content") or "").strip()
         source_names = "\n".join(_source_summary_lines(payload.get("source_files") or []))
+        if payload.get("task_type") == "revision" or revision_instruction or revision_attachments:
+            parts = [
+                f"회사명: {company}",
+                "작업 유형: 수정 자료조사",
+                "",
+                "기존 NotebookLM 노트북의 자료와 이전 자료조사 결과를 참고해 아래 사용자 수정 요청에만 답해주세요.",
+                "초기 자료조사용 지시문을 다시 실행하지 말고, 수정 요청에 필요한 보강/수정 방향과 반영 결과를 한국어 Markdown으로 정리해주세요.",
+            ]
+            if revision_instruction:
+                parts.extend(["", f"사용자 수정 요청: {revision_instruction}"])
+            if source_names:
+                parts.extend(["", "기존 전달 자료:", source_names])
+            if revision_attachments:
+                parts.extend(["", "수정 요청 첨부 자료:", *(_source_summary_lines(revision_attachments))])
+            parts.extend(
+                [
+                    "",
+                    "확인된 사실과 추정을 구분하고, 추가 확인이 필요한 항목이 있으면 질문으로 남겨주세요.",
+                ]
+            )
+            return "\n".join(parts).strip()
         parts = [
             prompt_content,
             "",
